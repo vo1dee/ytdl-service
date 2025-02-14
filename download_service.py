@@ -130,6 +130,27 @@ async def get_file(
         filename=filename
     )
 
+@app.delete("/files/{filename}")
+async def delete_file(
+    filename: str,
+    api_key: str = Depends(get_api_key)
+):
+    try:
+        file_path = os.path.join(DOWNLOADS_DIR, filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        os.remove(file_path)
+        logger.info(f"Successfully deleted file: {filename}")
+        
+        return {
+            "success": True,
+            "message": f"File {filename} deleted successfully"
+        }
+    except Exception as e:
+        logger.error(f"Failed to delete file {filename}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check(api_key: str = Depends(get_api_key)):
     try:
