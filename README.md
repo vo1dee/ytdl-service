@@ -22,8 +22,8 @@ A FastAPI-based service for downloading YouTube videos with API key authenticati
 
 1. Clone the repository:
    ```bash
-   git clone [your-repo-url]
-   cd youtube-download-service
+   git clone https://github.com/vo1dee/ytdl-service.git
+   cd ytdl-service
    ```
 
 2. Create and activate virtual environment:
