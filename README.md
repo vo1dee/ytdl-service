@@ -44,6 +44,43 @@ A FastAPI-based service for downloading YouTube videos with API key authenticati
    sudo chown -R $USER:$USER /opt/ytdl_service
    ```
 
+## Creating a Systemd Service
+
+To run the YouTube Download Service as a systemd service, create a service file:
+
+1. Create and edit the service file:
+   ```bash
+   sudo nano /etc/systemd/system/ytdl_service.service
+   ```
+
+2. Add the following content to the file:
+   ```ini
+   [Unit]
+   Description=YouTube Download Service
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=your_username  # Replace with the user that should run the service
+   ExecStart=/path/to/your/venv/bin/python /path/to/your/youtube-download-service/download_service.py
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. Save and exit the editor.
+
+4. Enable and start the service:
+   ```bash
+   sudo systemctl enable ytdl_service
+   sudo systemctl start ytdl_service
+   ```
+
+5. Check the status of the service:
+   ```bash
+   sudo systemctl status ytdl_service
+   ```
+
 ## API Endpoints
 
 ### Download Video
@@ -122,5 +159,5 @@ pytest
 5. Open a Pull Request
 
 ## License
-
-[Your chosen license]
+ 
+ MIT
