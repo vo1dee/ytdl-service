@@ -10,7 +10,6 @@ import os
 import logging
 from datetime import datetime
 from fastapi.responses import FileResponse
-import re
 
 # Set up logging
 logging.basicConfig(
@@ -62,9 +61,6 @@ class DownloadRequest(BaseModel):
 class DownloadResponse(BaseModel):
     success: bool
     file_path: str
-    title: str = None
-    description: str = None
-    hashtags: list = None
     error: str = None
 
 @app.middleware("http")
@@ -79,13 +75,6 @@ async def log_requests(request: Request, call_next):
     )
     return response
 
-def extract_hashtags(text):
-    if not text:
-        return []
-    # Extract hashtags using regex
-    hashtags = re.findall(r'#\w+', text)
-    return hashtags
-
 @app.post("/download")
 async def download_video(
     request: DownloadRequest,
@@ -94,110 +83,32 @@ async def download_video(
     try:
         logger.info(f"Starting download for URL: {request.url}")
         
-        # Use advanced options for extracting metadata
-        info_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'skip_download': True,  # We just want metadata first
-            'writeinfojson': False,
-            'writethumbnail': False,
-            'nocheckcertificate': True,
-            # Force fetching comments to get more metadata
-            'getcomments': True,
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_skip': ['js', 'configs'],
-                }
-            }
-        }
-        
-        # First, get the info without downloading to extract the actual title and metadata
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            logger.info("Extracting detailed video info...")
-            info_dict = ydl.extract_info(request.url, download=False)
-            
-            # Get the actual title from the video
-            video_title = info_dict.get('title', 'Unknown')
-            video_id = info_dict.get('id', 'Unknown')
-            video_description = info_dict.get('description', '')
-            
-            # Extract hashtags from description
-            hashtags = extract_hashtags(video_description)
-            
-            # Fix for Shorts: if title is generic "Video" or empty, try to extract from description
-            if video_title in ['Video', '', 'Unknown'] and video_description:
-                # Try to get first line of description as title
-                first_line = video_description.strip().split('\n')[0]
-                if first_line and not first_line.startswith('#'):
-                    video_title = first_line.strip()
-                    logger.info(f"Using first line of description as title: {video_title}")
-                # If no suitable first line, use ID with "YouTube Short" prefix
-                else:
-                    video_title = f"YouTube Short - {video_id}"
-            
-            logger.info(f"Video title: {video_title}, ID: {video_id}")
-            logger.info(f"Found {len(hashtags)} hashtags")
-        
-        # Custom sanitization function to avoid overly restricted filenames
-        def sanitize_filename(s):
-            # Replace problematic characters with underscores
-            s = re.sub(r'[\\/*?:"<>|]', '_', s)
-            # Limit length to avoid issues
-            return s[:100]
-        
-        # Create a sanitized title for filename
-        safe_title = sanitize_filename(video_title)
-        output_filename = f"{safe_title}-{video_id}"
-        
-        # Use persistent directory with our custom filename
-        output_template = os.path.join(DOWNLOADS_DIR, f"{output_filename}.%(ext)s")
+        # Use persistent directory and sanitize filename
+        output_template = os.path.join(DOWNLOADS_DIR, '%(title).100s-%(id)s.%(ext)s')
         
         ydl_opts = {
             'format': request.format,
             'outtmpl': output_template,
             'quiet': True,
             'no_warnings': True,
+            'extract_flat': False,
             'nocheckcertificate': True,
-            'restrictfilenames': False,  # We'll handle our own sanitization
-            'writeinfojson': False,
-            'writethumbnail': False
+            'restrictfilenames': True  # This will ensure safe filenames
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("Downloading video...")
-            ydl.download([request.url])
+            logger.info("Extracting video info...")
+            info = ydl.extract_info(request.url, download=True)
+            downloaded_file = ydl.prepare_filename(info)
             
-            # Find the downloaded file
-            possible_extensions = ['.mp4', '.webm', '.mkv', '.mp3', '.m4a', '.wav']
-            downloaded_file = None
-            
-            for ext in possible_extensions:
-                test_path = f"{output_template.replace('%(ext)s', ext.lstrip('.'))}"
-                if os.path.exists(test_path):
-                    downloaded_file = test_path
-                    break
-            
-            if not downloaded_file:
-                # Final fallback - look for any file with the ID in the name
-                for filename in os.listdir(DOWNLOADS_DIR):
-                    if video_id in filename:
-                        downloaded_file = os.path.join(DOWNLOADS_DIR, filename)
-                        break
-                
-                if not downloaded_file:
-                    raise Exception(f"File not found after download. Tried basename: {output_filename}")
+            if not os.path.exists(downloaded_file):
+                raise Exception(f"File not found after download: {downloaded_file}")
                 
             logger.info(f"Successfully downloaded: {downloaded_file}")
-            
-            # Return the filename and actual video metadata
+            # Return just the filename instead of full path
             return DownloadResponse(
                 success=True,
-                file_path=os.path.basename(downloaded_file),
-                title=video_title,
-                description=video_description,
-                hashtags=hashtags
+                file_path=os.path.basename(downloaded_file)
             )
                 
     except Exception as e:
@@ -213,21 +124,9 @@ async def get_file(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
-    # Determine media type based on file extension
-    extension = os.path.splitext(filename)[1].lower()
-    media_type = 'video/mp4'  # Default
-    
-    # Map common extensions to media types
-    if extension in ['.mp3', '.m4a', '.wav']:
-        media_type = 'audio/mpeg'
-    elif extension in ['.webm']:
-        media_type = 'video/webm'
-    elif extension in ['.mkv']:
-        media_type = 'video/x-matroska'
-    
     return FileResponse(
         file_path,
-        media_type=media_type,
+        media_type='video/mp4',
         filename=filename
     )
 
