@@ -61,6 +61,7 @@ class DownloadRequest(BaseModel):
 class DownloadResponse(BaseModel):
     success: bool
     file_path: str
+    title: str = None
     error: str = None
 
 @app.middleware("http")
@@ -83,8 +84,19 @@ async def download_video(
     try:
         logger.info(f"Starting download for URL: {request.url}")
         
-        # Use persistent directory and sanitize filename
-        output_template = os.path.join(DOWNLOADS_DIR, '%(title).100s-%(id)s.%(ext)s')
+        # First, get the info without downloading to extract the actual title
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            logger.info("Extracting video info...")
+            info_dict = ydl.extract_info(request.url, download=False)
+            
+            # Get the actual title from the video
+            video_title = info_dict.get('title', 'unknown')
+            video_id = info_dict.get('id', 'unknown')
+            
+            logger.info(f"Video title: {video_title}, ID: {video_id}")
+        
+        # Use persistent directory and use proper title for filename
+        output_template = os.path.join(DOWNLOADS_DIR, '%(title)s-%(id)s.%(ext)s')
         
         ydl_opts = {
             'format': request.format,
@@ -97,18 +109,28 @@ async def download_video(
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info("Extracting video info...")
+            logger.info("Downloading video...")
             info = ydl.extract_info(request.url, download=True)
             downloaded_file = ydl.prepare_filename(info)
             
             if not os.path.exists(downloaded_file):
-                raise Exception(f"File not found after download: {downloaded_file}")
+                # Check if the file exists with a different extension
+                base_path = downloaded_file.rsplit('.', 1)[0]
+                found_files = [f for f in os.listdir(DOWNLOADS_DIR) if f.startswith(os.path.basename(base_path))]
+                
+                if found_files:
+                    downloaded_file = os.path.join(DOWNLOADS_DIR, found_files[0])
+                    logger.info(f"Found file with different extension: {downloaded_file}")
+                else:
+                    raise Exception(f"File not found after download: {downloaded_file}")
                 
             logger.info(f"Successfully downloaded: {downloaded_file}")
-            # Return just the filename instead of full path
+            
+            # Return the filename and actual video title
             return DownloadResponse(
                 success=True,
-                file_path=os.path.basename(downloaded_file)
+                file_path=os.path.basename(downloaded_file),
+                title=video_title
             )
                 
     except Exception as e:
@@ -124,9 +146,21 @@ async def get_file(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     
+    # Determine media type based on file extension
+    extension = os.path.splitext(filename)[1].lower()
+    media_type = 'video/mp4'  # Default
+    
+    # Map common extensions to media types
+    if extension in ['.mp3', '.m4a', '.wav']:
+        media_type = 'audio/mpeg'
+    elif extension in ['.webm']:
+        media_type = 'video/webm'
+    elif extension in ['.mkv']:
+        media_type = 'video/x-matroska'
+    
     return FileResponse(
         file_path,
-        media_type='video/mp4',
+        media_type=media_type,
         filename=filename
     )
 
