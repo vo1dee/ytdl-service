@@ -3,7 +3,7 @@ from fastapi.security.api_key import APIKeyHeader
 from starlette.status import HTTP_403_FORBIDDEN, HTTP_429_TOO_MANY_REQUESTS
 import secrets
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator, HttpUrl
+from pydantic import BaseModel, field_validator, HttpUrl
 import yt_dlp
 import os
 import logging
@@ -123,24 +123,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 class DownloadRequest(BaseModel):
     url: HttpUrl
     format: str = 'best'
     convert_to: Optional[str] = 'mp4'
     audio_only: bool = False
-    
-    @validator('format')
+
+    @field_validator('format')
+    @classmethod
     def validate_format(cls, v):
         allowed_formats = ['best', 'bestvideo', 'bestaudio', '1080p', '720p', '480p', '360p']
         if v not in allowed_formats and not v.startswith('bestvideo[height<='):
             raise ValueError(f"Format must be one of {allowed_formats} or bestvideo[height<=NNN]")
         return v
-    
-    @validator('convert_to')
+
+    @field_validator('convert_to')
+    @classmethod
     def validate_convert_to(cls, v):
         if v and v not in ['mp4', 'mkv', 'webm', 'mp3', 'aac', 'm4a', None]:
             raise ValueError("Conversion format must be mp4, mkv, webm, mp3, aac, m4a, or null")
         return v
+
 
 class DownloadStatus(BaseModel):
     id: str
