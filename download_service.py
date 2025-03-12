@@ -20,9 +20,6 @@ import json
 import asyncio
 import subprocess
 import platform
-# For rate limiting - make sure these are installed from requirements.txt
-from fastapi_limiter import FastAPILimiter
-from fastapi_limiter.depends import RateLimiter
 import aioredis
 from contextlib import asynccontextmanager
 
