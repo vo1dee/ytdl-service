@@ -190,35 +190,42 @@ async def cleanup_storage(
   }
 
 @app.get("/storage")
-async def get_storage_info(
-  api_key: str = Depends(verify_api_key)
-):
-  """Get storage usage information"""
-  total_size = 0
-  file_count = 0
-  files = []
+  async def get_storage_info(
+      api_key: str = Depends(verify_api_key)
+  ):
+      """Get storage usage information"""
+      try:
+          total_size = 0
+          file_count = 0
+          files = []
 
-  for filename in os.listdir(DOWNLOADS_DIR):
-      file_path = os.path.join(DOWNLOADS_DIR, filename)
-      if os.path.isfile(file_path):
-          size = os.path.getsize(file_path)
-          modified = datetime.fromtimestamp(os.path.getmtime(file_path))
-          total_size += size
-          file_count += 1
+          for filename in os.listdir(DOWNLOADS_DIR):
+              file_path = os.path.join(DOWNLOADS_DIR, filename)
+              if os.path.isfile(file_path):
+                  try:
+                      size = os.path.getsize(file_path)
+                      modified = os.path.getmtime(file_path)
+                      total_size += size
+                      file_count += 1
 
-          files.append({
-              "filename": filename,
-              "size_bytes": size,
-              "size_mb": round(size / (1024 * 1024), 2),
-              "modified": modified.isoformat()
-          })
+                      files.append({
+                          "filename": filename,
+                          "size_bytes": size,
+                          "size_mb": round(size / (1024 * 1024), 2),
+                          "modified": modified
+                      })
+                  except Exception as e:
+                      logger.error(f"Error processing file {filename}: {str(e)}")
 
-  return {
-      "total_size_bytes": total_size,
-      "total_size_mb": round(total_size / (1024 * 1024), 2),
-      "file_count": file_count,
-      "files": files
-  }
+          return {
+              "total_size_bytes": total_size,
+              "total_size_mb": round(total_size / (1024 * 1024), 2),
+              "file_count": file_count,
+              "files": files
+          }
+      except Exception as e:
+          logger.error(f"Storage info error: {str(e)}")
+          return {"error": str(e)}
 
 if __name__ == "__main__":
   import uvicorn
