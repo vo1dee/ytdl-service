@@ -24,6 +24,7 @@ import platform
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 import aioredis
+from contextlib import asynccontextmanager
 
 # Set up logging with log rotation
 logging.basicConfig(
@@ -86,14 +87,14 @@ app = FastAPI(title="YouTube Download Service",
               description="A service to download and convert YouTube videos",
               version="1.0.0")
 
-@app.on_event("startup")
-async def startup():
-    # Initialize Redis for rate limiting
-    redis = await aioredis.from_url(config.REDIS_URL, encoding="utf8")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     await FastAPILimiter.init(redis)
-    
+    yield
     # Start cleanup task
     asyncio.create_task(periodic_cleanup())
+
+app = FastAPI(lifespan=lifespan)
 
 @app.on_event("shutdown")
 async def shutdown():
