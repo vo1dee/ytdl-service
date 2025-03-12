@@ -7,6 +7,7 @@ from pydantic import BaseModel, validator, HttpUrl
 import yt_dlp
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 import shutil
 from datetime import datetime, timedelta
 import time
@@ -16,6 +17,10 @@ import uuid
 import hashlib
 from typing import Optional, List, Dict, Any
 import json
+import asyncio
+import subprocess
+import platform
+# For rate limiting - make sure these are installed from requirements.txt
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 import aioredis
@@ -25,7 +30,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.handlers.RotatingFileHandler(
+        RotatingFileHandler(
             '/var/log/ytdl_service.log', 
             maxBytes=10485760,  # 10MB
             backupCount=5
