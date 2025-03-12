@@ -380,8 +380,8 @@ def format_size(size_bytes):
         return f"{size_bytes / (1024 ** 3):.2f} GB"
 
 @app.post("/download", 
-          response_model=DownloadStatus,
-          dependencies=[Depends(RateLimiter(times=10, seconds=60))])
+          response_model=DownloadStatus
+          
 async def start_download(
     request: DownloadRequest,
     background_tasks: BackgroundTasks,
