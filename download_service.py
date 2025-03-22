@@ -47,7 +47,7 @@ app = FastAPI()
 
 class DownloadRequest(BaseModel):
   url: str
-  format: str = 'best'
+  format: str = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'  # Default to 1080p
 
 @app.get("/health")
 async def health_check():
@@ -90,7 +90,8 @@ async def download_video(
           'quiet': True,
           'no_warnings': True,
           'restrictfilenames': True,
-          'prefer_ffmpeg': True
+          'prefer_ffmpeg': True,
+          'merge_output_format': 'mp4'  # Ensure output is MP4 when merging audio/video
       }
 
       # Special options for YouTube clips
@@ -124,6 +125,10 @@ async def download_video(
           if not os.path.exists(downloaded_file):
               raise Exception("File not found after download")
 
+          # Log resolution information
+          if info.get('height'):
+              logger.info(f"Downloaded video resolution: {info.get('width')}x{info.get('height')}")
+          
           logger.info(f"Download successful: {downloaded_file}")
 
           return {
@@ -132,7 +137,8 @@ async def download_video(
               "title": info.get('title', 'Video'),
               "url": request.url,
               "description": info.get('description', ''),
-              "tags": info.get('tags', [])
+              "tags": info.get('tags', []),
+              "resolution": f"{info.get('width', 'unknown')}x{info.get('height', 'unknown')}"
           }
 
   except Exception as e:
