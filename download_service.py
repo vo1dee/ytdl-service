@@ -47,7 +47,8 @@ app = FastAPI()
 
 class DownloadRequest(BaseModel):
   url: str
-  format: str = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]'  # Default to 1080p
+  # This has a more specific format prioritizing exactly 1080p first, then falling back
+  format: str = 'bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/best[height=1080]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'
 
 @app.get("/health")
 async def health_check():
@@ -78,6 +79,15 @@ async def download_video(
 ):
   try:
       logger.info(f"Starting download for URL: {request.url}")
+      
+      # First, get available formats to log
+      with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+          info = ydl.extract_info(request.url, download=False)
+          if 'formats' in info:
+              logger.info(f"Available formats:")
+              for fmt in info['formats']:
+                  if 'height' in fmt and fmt['height']:
+                      logger.info(f"Format ID: {fmt['format_id']}, Resolution: {fmt.get('width', 'N/A')}x{fmt['height']}, Extension: {fmt.get('ext', 'N/A')}")
 
       # Generate unique ID for filename
       download_id = str(uuid.uuid4())[:8]
@@ -87,11 +97,16 @@ async def download_video(
       ydl_opts = {
           'format': request.format,
           'outtmpl': output_template,
-          'quiet': True,
-          'no_warnings': True,
+          'quiet': False,  # Enable output for debugging
+          'no_warnings': False,  # Show warnings for debugging
           'restrictfilenames': True,
           'prefer_ffmpeg': True,
-          'merge_output_format': 'mp4'  # Ensure output is MP4 when merging audio/video
+          'merge_output_format': 'mp4',
+          'verbose': True,  # Add verbose output
+          'postprocessors': [{
+              'key': 'FFmpegVideoConvertor',
+              'preferedformat': 'mp4',
+          }]
       }
 
       # Special options for YouTube clips
@@ -111,6 +126,7 @@ async def download_video(
       # Download the video
       with yt_dlp.YoutubeDL(ydl_opts) as ydl:
           logger.info("Extracting video info...")
+          logger.info(f"Using format: {request.format}")
           info = ydl.extract_info(request.url, download=True)
           downloaded_file = ydl.prepare_filename(info)
 
@@ -125,10 +141,25 @@ async def download_video(
           if not os.path.exists(downloaded_file):
               raise Exception("File not found after download")
 
-          # Log resolution information
-          if info.get('height'):
-              logger.info(f"Downloaded video resolution: {info.get('width')}x{info.get('height')}")
+          # Get video resolution with ffprobe
+          try:
+              cmd = [
+                  'ffprobe', 
+                  '-v', 'error', 
+                  '-select_streams', 'v:0', 
+                  '-show_entries', 'stream=width,height', 
+                  '-of', 'csv=s=x:p=0', 
+                  downloaded_file
+              ]
+              result = subprocess.run(cmd, capture_output=True, text=True)
+              resolution = result.stdout.strip()
+              logger.info(f"Verified resolution with ffprobe: {resolution}")
+          except Exception as e:
+              logger.error(f"Error getting resolution with ffprobe: {str(e)}")
+              resolution = f"{info.get('width', 'unknown')}x{info.get('height', 'unknown')}"
           
+          # Log resolution information
+          logger.info(f"Downloaded video resolution (from info): {info.get('width')}x{info.get('height')}")
           logger.info(f"Download successful: {downloaded_file}")
 
           return {
@@ -138,7 +169,8 @@ async def download_video(
               "url": request.url,
               "description": info.get('description', ''),
               "tags": info.get('tags', []),
-              "resolution": f"{info.get('width', 'unknown')}x{info.get('height', 'unknown')}"
+              "resolution": resolution,
+              "format_id": info.get('format_id', 'unknown')
           }
 
   except Exception as e:
