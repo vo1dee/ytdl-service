@@ -11,11 +11,6 @@ import uuid
 import subprocess
 import secrets
 
-# Import FastAPILimiter
-from fastapi_limiter import FastAPILimiter
-from fastapi_limiter.depends import RateLimiter
-import redis.asyncio as redis
-
 # Simple logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ytdl_simple")
@@ -50,19 +45,9 @@ async def verify_api_key(api_key_header: str = Security(api_key_header)):
 
 app = FastAPI()
 
-# Setup FastAPILimiter on startup
-@app.on_event("startup")
-async def startup():
-    # Connect to a Redis instance - adjust host/port as needed for your environment
-    redis_connection = await redis.Redis(host="localhost", port=6379, db=0, encoding="utf-8", decode_responses=True)
-    # Initialize the rate limiter
-    await FastAPILimiter.init(redis_connection)
-    logger.info("Rate limiter initialized successfully")
-
 class DownloadRequest(BaseModel):
   url: str
-  # This has a more specific format prioritizing exactly 1080p first, then falling back
-  format: str = 'bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/best[height=1080]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'
+  format: str = 'best'
 
 @app.get("/health")
 async def health_check():
@@ -87,23 +72,12 @@ async def health_check():
       }
 
 @app.post("/download")
-# Apply rate limiting - 10 requests per minute
-@RateLimiter(times=10, seconds=60)
 async def download_video(
   request: DownloadRequest,
   api_key: str = Depends(verify_api_key)
 ):
   try:
       logger.info(f"Starting download for URL: {request.url}")
-      
-      # First, get available formats to log
-      with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-          info = ydl.extract_info(request.url, download=False)
-          if 'formats' in info:
-              logger.info(f"Available formats:")
-              for fmt in info['formats']:
-                  if 'height' in fmt and fmt['height']:
-                      logger.info(f"Format ID: {fmt['format_id']}, Resolution: {fmt.get('width', 'N/A')}x{fmt['height']}, Extension: {fmt.get('ext', 'N/A')}")
 
       # Generate unique ID for filename
       download_id = str(uuid.uuid4())[:8]
@@ -113,16 +87,10 @@ async def download_video(
       ydl_opts = {
           'format': request.format,
           'outtmpl': output_template,
-          'quiet': False,  # Enable output for debugging
-          'no_warnings': False,  # Show warnings for debugging
+          'quiet': True,
+          'no_warnings': True,
           'restrictfilenames': True,
-          'prefer_ffmpeg': True,
-          'merge_output_format': 'mp4',
-          'verbose': True,  # Add verbose output
-          'postprocessors': [{
-              'key': 'FFmpegVideoConvertor',
-              'preferedformat': 'mp4',
-          }]
+          'prefer_ffmpeg': True
       }
 
       # Special options for YouTube clips
@@ -142,7 +110,6 @@ async def download_video(
       # Download the video
       with yt_dlp.YoutubeDL(ydl_opts) as ydl:
           logger.info("Extracting video info...")
-          logger.info(f"Using format: {request.format}")
           info = ydl.extract_info(request.url, download=True)
           downloaded_file = ydl.prepare_filename(info)
 
@@ -157,25 +124,6 @@ async def download_video(
           if not os.path.exists(downloaded_file):
               raise Exception("File not found after download")
 
-          # Get video resolution with ffprobe
-          try:
-              cmd = [
-                  'ffprobe', 
-                  '-v', 'error', 
-                  '-select_streams', 'v:0', 
-                  '-show_entries', 'stream=width,height', 
-                  '-of', 'csv=s=x:p=0', 
-                  downloaded_file
-              ]
-              result = subprocess.run(cmd, capture_output=True, text=True)
-              resolution = result.stdout.strip()
-              logger.info(f"Verified resolution with ffprobe: {resolution}")
-          except Exception as e:
-              logger.error(f"Error getting resolution with ffprobe: {str(e)}")
-              resolution = f"{info.get('width', 'unknown')}x{info.get('height', 'unknown')}"
-          
-          # Log resolution information
-          logger.info(f"Downloaded video resolution (from info): {info.get('width')}x{info.get('height')}")
           logger.info(f"Download successful: {downloaded_file}")
 
           return {
@@ -184,9 +132,7 @@ async def download_video(
               "title": info.get('title', 'Video'),
               "url": request.url,
               "description": info.get('description', ''),
-              "tags": info.get('tags', []),
-              "resolution": resolution,
-              "format_id": info.get('format_id', 'unknown')
+              "tags": info.get('tags', [])
           }
 
   except Exception as e:
@@ -197,7 +143,6 @@ async def download_video(
       }
 
 @app.get("/files/{filename}")
-@RateLimiter(times=30, seconds=60)
 async def get_file(
   filename: str,
   api_key: str = Depends(verify_api_key)
