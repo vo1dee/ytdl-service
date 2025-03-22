@@ -116,7 +116,7 @@ async def download_video(
           # Check if file exists (account for format changes)
           if not os.path.exists(downloaded_file):
               base, _ = os.path.splitext(downloaded_file)
-              for ext in ['.mp4', '.webm', '.mkv']:
+              for ext in ['.mp4', '.mkv']:
                   if os.path.exists(base + ext):
                       downloaded_file = base + ext
                       break
