@@ -11,6 +11,11 @@ import uuid
 import subprocess
 import secrets
 
+# Import FastAPILimiter
+from fastapi_limiter import FastAPILimiter
+from fastapi_limiter.depends import RateLimiter
+import redis.asyncio as redis
+
 # Simple logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ytdl_simple")
@@ -45,6 +50,15 @@ async def verify_api_key(api_key_header: str = Security(api_key_header)):
 
 app = FastAPI()
 
+# Setup FastAPILimiter on startup
+@app.on_event("startup")
+async def startup():
+    # Connect to a Redis instance - adjust host/port as needed for your environment
+    redis_connection = await redis.Redis(host="localhost", port=6379, db=0, encoding="utf-8", decode_responses=True)
+    # Initialize the rate limiter
+    await FastAPILimiter.init(redis_connection)
+    logger.info("Rate limiter initialized successfully")
+
 class DownloadRequest(BaseModel):
   url: str
   # This has a more specific format prioritizing exactly 1080p first, then falling back
@@ -73,6 +87,8 @@ async def health_check():
       }
 
 @app.post("/download")
+# Apply rate limiting - 10 requests per minute
+@RateLimiter(times=10, seconds=60)
 async def download_video(
   request: DownloadRequest,
   api_key: str = Depends(verify_api_key)
@@ -181,6 +197,7 @@ async def download_video(
       }
 
 @app.get("/files/{filename}")
+@RateLimiter(times=30, seconds=60)
 async def get_file(
   filename: str,
   api_key: str = Depends(verify_api_key)
