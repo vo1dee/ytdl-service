@@ -87,38 +87,84 @@ async def download_video(
       ydl_opts = {
           'format': request.format,
           'outtmpl': output_template,
-          'quiet': True,
-          'no_warnings': True,
+          'quiet': False,  # Enable output for debugging
+          'no_warnings': False,  # Show warnings for debugging
           'restrictfilenames': True,
-          'prefer_ffmpeg': True
+          'prefer_ffmpeg': True,
+          'merge_output_format': 'mp4',  # Force MP4 output format
       }
 
       # Special options for YouTube clips
       if 'youtube.com/clip' in request.url.lower():
-          logger.info("YouTube clip detected - adding special options")
+          logger.info("YouTube clip detected - applying specialized configuration")
+          
+          # Extract clip ID for better logging
+          clip_id = "unknown"
+          try:
+              if "clip/" in request.url:
+                  clip_id = request.url.split("clip/")[1].split("?")[0]
+          except:
+              pass
+              
+          logger.info(f"Processing YouTube clip ID: {clip_id}")
+          
+          # Updated clip options - more comprehensive approach
           ydl_opts.update({
-              'force_generic_extractor': True,
+              'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+              'force_generic_extractor': False,  # Changed from True to False
               'no_playlist': True,
               'geo_bypass': True,
-              'socket_timeout': 15,
-              'external_downloader': 'ffmpeg',
-              'external_downloader_args': {
-                  'ffmpeg': ['-loglevel', 'warning']
+              'socket_timeout': 30,  # Increased timeout
+              'retries': 10,         # More retries
+              'fragment_retries': 10,
+              'skip_download': False,
+              'keepvideo': True,
+              'verbose': True,       # More verbose output for debugging
+              'http_headers': {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
               }
           })
+          
+          # Check if ffmpeg is available
+          ffmpeg_available = subprocess.run(
+              ["which", "ffmpeg"],
+              capture_output=True
+          ).returncode == 0
+          
+          if ffmpeg_available:
+              logger.info("ffmpeg detected, using as external downloader")
+              ydl_opts.update({
+                  'external_downloader': 'ffmpeg',
+                  'external_downloader_args': {
+                      'ffmpeg': ['-loglevel', 'warning', '-reconnect', '1', 
+                                '-reconnect_streamed', '1', '-reconnect_delay_max', '5']
+                  }
+              })
+          else:
+              logger.warning("ffmpeg not found, using native downloaders")
+              ydl_opts.update({
+                  'hls_prefer_native': True  # Use native downloader if ffmpeg not available
+              })
 
       # Download the video
       with yt_dlp.YoutubeDL(ydl_opts) as ydl:
           logger.info("Extracting video info...")
           info = ydl.extract_info(request.url, download=True)
           downloaded_file = ydl.prepare_filename(info)
+          
+          # Log format details for debugging
+          if 'youtube.com/clip' in request.url.lower():
+              logger.info(f"Selected format: {info.get('format_id', 'unknown')}")
+              logger.info(f"Format description: {info.get('format', 'unknown')}")
 
           # Check if file exists (account for format changes)
           if not os.path.exists(downloaded_file):
               base, _ = os.path.splitext(downloaded_file)
               for ext in ['.mp4', '.webm', '.mkv']:
-                  if os.path.exists(base + ext):
-                      downloaded_file = base + ext
+                  potential_file = base + ext
+                  if os.path.exists(potential_file):
+                      downloaded_file = potential_file
+                      logger.info(f"Found file with different extension: {downloaded_file}")
                       break
 
           if not os.path.exists(downloaded_file):
@@ -135,6 +181,63 @@ async def download_video(
               "tags": info.get('tags', [])
           }
 
+  except yt_dlp.utils.DownloadError as e:
+      error_msg = str(e)
+      logger.error(f"YouTube download error: {error_msg}")
+      
+      # Handle common YouTube clip errors
+      if "youtube.com/clip" in request.url.lower():
+          logger.error(f"YouTube clip download failed with error: {error_msg}")
+          
+          # Try one more time with different options if it's a clip
+          try:
+              logger.info("Attempting fallback download method for clip")
+              
+              # Different approach for clips
+              alt_opts = {
+                  'format': 'best[ext=mp4]/best',  # Simpler format string
+                  'outtmpl': output_template,
+                  'quiet': False,
+                  'no_warnings': False,
+                  'restrictfilenames': True,
+                  'prefer_ffmpeg': True,
+                  'merge_output_format': 'mp4',
+                  'force_generic_extractor': True,  # Try with this option
+                  'extractor_args': {'youtube': {'player_client': ['android']}},  # Try android client
+                  'geo_bypass': True,
+                  'nocheckcertificate': True,
+              }
+              
+              with yt_dlp.YoutubeDL(alt_opts) as ydl2:
+                  info = ydl2.extract_info(request.url, download=True)
+                  downloaded_file = ydl2.prepare_filename(info)
+                  
+                  # Check for the file with possible extensions
+                  if not os.path.exists(downloaded_file):
+                      base, _ = os.path.splitext(downloaded_file)
+                      for ext in ['.mp4', '.webm', '.mkv']:
+                          if os.path.exists(base + ext):
+                              downloaded_file = base + ext
+                              break
+                  
+                  if os.path.exists(downloaded_file):
+                      logger.info(f"Fallback download successful: {downloaded_file}")
+                      return {
+                          "success": True,
+                          "file_path": os.path.basename(downloaded_file),
+                          "title": info.get('title', 'Video'),
+                          "url": request.url,
+                          "description": info.get('description', ''),
+                          "tags": info.get('tags', []),
+                          "note": "Downloaded with fallback method"
+                      }
+          except Exception as inner_e:
+              logger.error(f"Fallback download also failed: {str(inner_e)}")
+              
+      return {
+          "success": False,
+          "error": str(e)
+      }
   except Exception as e:
       logger.error(f"Download failed: {str(e)}")
       return {
