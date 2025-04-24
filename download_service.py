@@ -93,6 +93,7 @@ async def download_video(
           'restrictfilenames': True,
           'prefer_ffmpeg': True,
           'merge_output_format': 'mp4',  # Force MP4 output format
+          'concurrent_fragment_downloads': 3
       }
 
       # Special options for YouTube clips
@@ -158,6 +159,8 @@ async def download_video(
 
           title = info.get("title") or "video"
           ext = info.get("ext") or "mp4"
+          output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}-video.{ext}')
+
 
           # Construct a fallback filename if prepare_filename fails
           fallback_filename = os.path.join(DOWNLOADS_DIR, f"{download_id}-{title}.{ext}")
