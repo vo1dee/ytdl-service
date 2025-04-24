@@ -97,12 +97,6 @@ async def download_video(
       # Special options for YouTube clips
       if 'youtube.com/clip' in request.url.lower():
           logger.info("YouTube clip detected - applying specialized configuration")
-          logger.info(f"Selected format: {info.get('format_id', 'unknown')}")
-          logger.info(f"Video resolution: {info.get('width', 'unknown')}x{info.get('height', 'unknown')}")
-          logger.info(f"Available formats:")
-          for fmt in info.get('formats', []):
-              logger.info(f"  - {fmt.get('format_id')}: {fmt.get('width')}x{fmt.get('height')} ({fmt.get('ext')})")
-
           
           # Extract clip ID for better logging
           clip_id = "unknown"
@@ -162,7 +156,13 @@ async def download_video(
           # Log format details for debugging
           if 'youtube.com/clip' in request.url.lower():
               logger.info(f"Selected format: {info.get('format_id', 'unknown')}")
+              logger.info(f"Video resolution: {info.get('width', 'unknown')}x{info.get('height', 'unknown')}")
               logger.info(f"Format description: {info.get('format', 'unknown')}")
+              
+              # Log available formats
+              logger.info(f"Available formats:")
+              for fmt in info.get('formats', []):
+                  logger.info(f"  - {fmt.get('format_id')}: {fmt.get('width')}x{fmt.get('height')} ({fmt.get('ext')})")
 
           # Check if file exists (account for format changes)
           if not os.path.exists(downloaded_file):
@@ -218,6 +218,10 @@ async def download_video(
               with yt_dlp.YoutubeDL(alt_opts) as ydl2:
                   info = ydl2.extract_info(request.url, download=True)
                   downloaded_file = ydl2.prepare_filename(info)
+                  
+                  # Log resolution info for fallback method
+                  logger.info(f"Fallback - Selected format: {info.get('format_id', 'unknown')}")
+                  logger.info(f"Fallback - Video resolution: {info.get('width', 'unknown')}x{info.get('height', 'unknown')}")
                   
                   # Check for the file with possible extensions
                   if not os.path.exists(downloaded_file):
