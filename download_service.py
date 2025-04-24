@@ -97,6 +97,12 @@ async def download_video(
       # Special options for YouTube clips
       if 'youtube.com/clip' in request.url.lower():
           logger.info("YouTube clip detected - applying specialized configuration")
+          logger.info(f"Selected format: {info.get('format_id', 'unknown')}")
+          logger.info(f"Video resolution: {info.get('width', 'unknown')}x{info.get('height', 'unknown')}")
+          logger.info(f"Available formats:")
+          for fmt in info.get('formats', []):
+              logger.info(f"  - {fmt.get('format_id')}: {fmt.get('width')}x{fmt.get('height')} ({fmt.get('ext')})")
+
           
           # Extract clip ID for better logging
           clip_id = "unknown"
@@ -108,22 +114,23 @@ async def download_video(
               
           logger.info(f"Processing YouTube clip ID: {clip_id}")
           
-          # Updated clip options - more comprehensive approach
+          # For YouTube clips section
           ydl_opts.update({
-              'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-              'force_generic_extractor': False,  # Changed from True to False
-              'no_playlist': True,
-              'geo_bypass': True,
-              'socket_timeout': 30,  # Increased timeout
-              'retries': 10,         # More retries
-              'fragment_retries': 10,
-              'skip_download': False,
-              'keepvideo': True,
-              'verbose': True,       # More verbose output for debugging
-              'http_headers': {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-              }
-          })
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',  # Modified format string
+                'force_generic_extractor': False,
+                'no_playlist': True,
+                'geo_bypass': True,
+                'socket_timeout': 30,
+                'retries': 10,
+                'fragment_retries': 10,
+                'skip_download': False,
+                'keepvideo': True,
+                'verbose': True,
+                'listformats': True,  # Add this to log available formats
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                }
+            })
           
           # Check if ffmpeg is available
           ffmpeg_available = subprocess.run(
@@ -195,7 +202,7 @@ async def download_video(
               
               # Different approach for clips
               alt_opts = {
-                  'format': 'best[ext=mp4]/best',  # Simpler format string
+                  'format': 'bestvideo+bestaudio/best',     # Simpler format string
                   'outtmpl': output_template,
                   'quiet': False,
                   'no_warnings': False,
