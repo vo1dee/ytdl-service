@@ -11,6 +11,8 @@ A FastAPI-based service for downloading YouTube videos with API key authenticati
 - 🔍 Health check endpoint
 - 🌐 CORS support
 - 🗑️ File management (download & delete)
+- 📦 List available files for download
+- 🛠️ Graceful error handling and informative responses
 
 ## Prerequisites
 
@@ -62,7 +64,7 @@ To run the YouTube Download Service as a systemd service, create a service file:
    [Service]
    Type=simple
    User=your_username  # Replace with the user that should run the service
-   ExecStart=/path/to/your/venv/bin/python /path/to/your/youtube-download-service/download_service.py
+   ExecStart=/path/to/your/venv/bin/python /path/to/your/ytdl-service/download_service.py
 
    [Install]
    WantedBy=multi-user.target
@@ -100,6 +102,12 @@ GET /files/{filename}
 X-API-Key: your-api-key
 ```
 
+### List Files
+```http
+GET /files
+X-API-Key: your-api-key
+```
+
 ### Delete File
 ```http
 DELETE /files/{filename}
@@ -133,8 +141,8 @@ Service logs are stored in `/var/log/ytdl_service.log` with the following inform
 ### Local Setup
 ```bash
 # Clone and setup
-git clone [your-repo-url]
-cd youtube-download-service
+git clone https://github.com/vo1dee/ytdl-service.git
+cd ytdl-service
 python -m venv venv
 source venv/bin/activate
 
@@ -145,9 +153,6 @@ pip install -r requirements.txt
 python download_service.py
 ```
 
-### Running Tests
-```bash
-pytest
 ```
 
 ## Contributing
@@ -159,5 +164,5 @@ pytest
 5. Open a Pull Request
 
 ## License
- 
- MIT
+
+MIT
