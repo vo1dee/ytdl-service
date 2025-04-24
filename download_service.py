@@ -81,7 +81,8 @@ async def download_video(
 
       # Generate unique ID for filename
       download_id = str(uuid.uuid4())[:8]
-      output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}-%(title)s.%(ext)s')
+      output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}-video.%(ext)s')
+
 
       # Setup yt-dlp options
       ydl_opts = {
