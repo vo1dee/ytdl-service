@@ -154,6 +154,27 @@ async def download_video(
           downloaded_file = ydl.prepare_filename(info)
           logger.info(f"Expected downloaded file path: {downloaded_file}")
           logger.info(f"Files in directory: {os.listdir(DOWNLOADS_DIR)}")
+
+          title = info.get("title") or "video"
+          ext = info.get("ext") or "mp4"
+
+          # Construct a fallback filename if prepare_filename fails
+          fallback_filename = os.path.join(DOWNLOADS_DIR, f"{download_id}-{title}.{ext}")
+          downloaded_file = ydl.prepare_filename(info)
+
+          # Log ext/title explicitly
+          logger.info(f"info['title']: {title}")
+          logger.info(f"info['ext']: {ext}")
+          logger.info(f"ydl.prepare_filename: {downloaded_file}")
+          logger.info(f"Fallback filename: {fallback_filename}")
+
+          # If file does not exist, use fallback
+          if not os.path.exists(downloaded_file):
+              if os.path.exists(fallback_filename):
+                  downloaded_file = fallback_filename
+                  logger.info(f"Using fallback filename: {downloaded_file}")
+              else:
+                  raise Exception("File not found after download")
           
           # Log format details for debugging
           if 'youtube.com/clip' in request.url.lower():
