@@ -11,6 +11,7 @@ import uuid
 import subprocess
 import secrets
 import time # Import time for potential small delay
+from datetime import datetime # Import datetime for storage info
 
 # Simple logging
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ def get_api_key():
         except IOError as e:
             logger.error(f"Error writing API key file {API_KEY_FILE}: {e}")
             # Fallback to generating a key without saving if file writing fails
+            logger.warning("Failed to write API key file, using temporary key.")
             return secrets.token_urlsafe(32)
     else:
         try:
@@ -41,6 +43,7 @@ def get_api_key():
         except IOError as e:
             logger.error(f"Error reading API key file {API_KEY_FILE}: {e}")
             # Fallback to generating a temporary key if file reading fails
+            logger.warning("Failed to read API key file, using temporary key.")
             return secrets.token_urlsafe(32)
 
 
@@ -60,18 +63,6 @@ app = FastAPI()
 class DownloadRequest(BaseModel):
     url: str
     format: str = 'bestvideo+bestaudio/best' # Defaulting to best video and audio, or best if merging not possible
-
-# Custom PostProcessor to collect the final filename
-class FilenameCollectorPP(yt_dlp.postprocessor.PostProcessor):
-    def __init__(self, collector):
-        self.collector = collector
-
-    def run(self, info):
-        # yt-dlp might call this multiple times for different stages (e.g., before and after merge)
-        # We want the final filepath
-        self.collector['final_filepath'] = info['filepath']
-        logger.info(f"FilenameCollectorPP collected filepath: {self.collector['final_filepath']}")
-        return [], info # Return no changes and the original info
 
 @app.get("/health")
 async def health_check():
@@ -108,9 +99,13 @@ async def download_video(
     api_key: str = Depends(verify_api_key)
 ):
     download_id = str(uuid.uuid4())[:8]
-    # Use a simpler output template for yt-dlp
-    output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s')
-    final_filepath_collector = {} # Dictionary to collect the final filename
+    # Use a simpler output template that we can predict
+    # yt-dlp will replace %(ext)s with the actual extension during the download/merge process
+    output_template_base = os.path.join(DOWNLOADS_DIR, f'{download_id}')
+    output_template = f'{output_template_base}.%(ext)s'
+
+    # Dictionary to hold info needed after download
+    download_info = {}
 
     try:
         logger.info(f"Starting download for URL: {request.url} with format: {request.format}")
@@ -129,33 +124,18 @@ async def download_video(
             'fragment_retries': 5,
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'verbose': True, # More verbose output
+            'verbose': True, # More verbose output from yt-dlp
             'progress': True, # Show progress
             'progress_hooks': [lambda d: logger.info(f"yt-dlp progress: {d.get('_percent_str', 'N/A')} {d.get('_eta_str', 'N/A')}") if d['status'] != 'finished' else logger.info("yt-dlp progress: Finished")], # Log progress
-            'postprocessors': [], # Initialize postprocessors list
+            # Removed custom postprocessor here to avoid the TypeError
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
             }
         }
 
-        # Add the FilenameCollectorPP
-        ydl_opts['postprocessors'].append({
-            'key': FilenameCollectorPP,
-            'collector': final_filepath_collector
-        })
-
-        # Ensure a merge postprocessor is present if merging is expected
-        # yt-dlp automatically adds FFmpegVideoRemuxer if merge_output_format is set and ffmpeg is preferred,
-        # but adding it explicitly here makes the postprocessor chain more predictable.
-        if 'bestvideo' in request.format or 'bestaudio' in request.format:
-             ydl_opts['postprocessors'].append({
-                 'key': 'FFmpegVideoRemuxer',
-                 'loglevel': 'warning',
-                 'already_have_ext': 'mp4'
-             })
-
-
-        # Check if ffmpeg is available and configure as external downloader if needed
+        # Check if ffmpeg is available and configure if needed
+        # external_downloader_args are typically used for downloading fragments (like HLS/DASH)
+        # and shouldn't conflict with postprocessors for merging, but we keep the check.
         ffmpeg_available = subprocess.run(
             ["which", "ffmpeg"],
             capture_output=True
@@ -170,68 +150,182 @@ async def download_video(
                  }
             })
         else:
-             # If ffmpeg is not available, ensure we don't try to use it for merging/remuxing
-             logger.warning("ffmpeg not found. Merging/remuxing may not work correctly.")
-             # Remove FFmpegVideoRemuxer if added above
-             ydl_opts['postprocessors'] = [pp for pp in ydl_opts['postprocessors'] if pp.get('key') != 'FFmpegVideoRemuxer']
-             # Fallback to native HLS downloader if applicable
-             ydl_opts['hls_prefer_native'] = True
+             logger.warning("ffmpeg not found. Merging/remuxing may not work correctly if required by format.")
 
 
-        # Download the video
+        # Download the video and get info
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logger.info(f"yt-dlp options: {ydl_opts}")
             logger.info("Extracting video info and starting download...")
+            # download=True makes extract_info also download
             info = ydl.extract_info(request.url, download=True)
+            # Store info needed later, like title. This info object *should*
+            # contain details about the downloaded file after the download=True call.
+            download_info['title'] = info.get('title', 'Video')
+            download_info['description'] = info.get('description', '')
+            download_info['tags'] = info.get('tags', [])
+            # We can try to get the expected filename from info as well,
+            # but the filesystem check is the primary verification.
+            download_info['expected_filepath_from_info'] = ydl.prepare_filename(info)
+            logger.info(f"yt-dlp info after download: expected filepath is {download_info['expected_filepath_from_info']}")
 
-        # Retrieve the final filepath from the collector
-        downloaded_file = final_filepath_collector.get('final_filepath')
 
-        # Small delay to ensure file system sync
+        # --- File Verification After Download ---
+        downloaded_file = None
+        # Small delay to ensure file system sync after yt-dlp finishes
         time.sleep(1)
 
-        # Verify the file exists using the collected path
+        # List files in the download directory
+        files_in_dir = os.listdir(DOWNLOADS_DIR)
+        logger.info(f"Files in directory after yt-dlp execution: {files_in_dir}")
+
+        # Look for the file starting with the download_id
+        # yt-dlp uses the outtmpl base name before the extension
+        potential_files = [f for f in files_in_dir if f.startswith(f"{download_id}.")]
+
+        if not potential_files:
+            # No file starting with the expected ID. extension found
+            logger.error(f"Download failed: No file found matching pattern {download_id}.* in {DOWNLOADS_DIR}")
+            # Log the full list of files found for debugging
+            logger.info(f"All files in {DOWNLOADS_DIR}: {files_in_dir}")
+            raise Exception("Downloaded file not found or named as expected.")
+
+        elif len(potential_files) == 1:
+            # Exactly one file found, assume it's the correct one
+            downloaded_file = os.path.join(DOWNLOADS_DIR, potential_files[0])
+            logger.info(f"Found unique downloaded file: {downloaded_file}")
+
+        else:
+            # Multiple files found starting with the ID prefix.
+            # This shouldn't happen with a simple outtmpl + merge_output_format.
+            # Could indicate temporary files or an issue.
+            logger.warning(f"Multiple potential files found for ID {download_id}.*: {potential_files}. Attempting to find the final merged file.")
+
+            # Try to find the file matching the expected final name from info, or the one with the expected merge extension (.mp4)
+            expected_final_filename_from_info = os.path.basename(download_info.get('expected_filepath_from_info', ''))
+            expected_merged_extension = ydl_opts.get('merge_output_format', 'mp4') # Default to mp4 if not set
+            expected_final_filename_by_merge_ext = f"{download_id}.{expected_merged_extension}"
+
+            found_file = None
+            if expected_final_filename_from_info and expected_final_filename_from_info in potential_files:
+                 found_file = expected_final_filename_from_info
+                 logger.info(f"Found file matching expected final name from info: {found_file}")
+            elif expected_final_filename_by_merge_ext in potential_files:
+                 found_file = expected_final_filename_by_merge_ext
+                 logger.info(f"Found file matching expected merge extension name: {found_file}")
+            else:
+                # Fallback to finding the largest file among potential files
+                max_size = -1
+                for fname in potential_files:
+                    fpath = os.path.join(DOWNLOADS_DIR, fname)
+                    try:
+                        if os.path.isfile(fpath):
+                            size = os.path.getsize(fpath)
+                            if size > max_size:
+                                max_size = size
+                                found_file = fname
+                    except Exception as size_e:
+                        logger.warning(f"Error getting size of {fname}: {size_e}")
+
+                if found_file:
+                    logger.info(f"Selected largest potential file: {found_file}")
+
+            if found_file:
+                 downloaded_file = os.path.join(DOWNLOADS_DIR, found_file)
+            else:
+                 # If still no file is clearly identified
+                 logger.error(f"Download failed: Could not confidently identify the final file among {potential_files}")
+                 raise Exception("Downloaded file identification failed.")
+
+
         if downloaded_file and os.path.exists(downloaded_file):
             logger.info(f"Download successful: {downloaded_file}")
 
             # Clean up other files in the directory that start with the same download_id
-            # This helps remove partial downloads or other artifacts
+            # This helps remove partial downloads or other artifacts (like .temp files, original audio/video files before merge)
             for item in os.listdir(DOWNLOADS_DIR):
                  if item.startswith(download_id) and os.path.join(DOWNLOADS_DIR, item) != downloaded_file:
                      item_path = os.path.join(DOWNLOADS_DIR, item)
                      try:
+                         # Ensure it's a file or an empty directory before attempting to remove
                          if os.path.isfile(item_path):
                               os.remove(item_path)
                               logger.info(f"Cleaned up artifact file: {item}")
+                         elif os.path.isdir(item_path):
+                              try:
+                                  # Only remove empty directories
+                                  if not os.listdir(item_path):
+                                      os.rmdir(item_path)
+                                      logger.info(f"Cleaned up empty directory: {item}")
+                              except OSError:
+                                   # Ignore if directory is not empty or cannot be removed
+                                   pass
+                         else:
+                             logger.info(f"Skipping cleanup of non-file/non-directory item: {item}")
+
                      except Exception as cleanup_e:
-                          logger.warning(f"Failed to clean up file {item}: {cleanup_e}")
+                          logger.warning(f"Failed to clean up item {item}: {cleanup_e}")
 
-
+            # Return success response using info stored earlier
             return {
                 "success": True,
                 "file_path": os.path.basename(downloaded_file),
-                "title": info.get('title', 'Video'),
+                "title": download_info['title'],
                 "url": request.url,
-                "description": info.get('description', ''),
-                "tags": info.get('tags', [])
+                "description": download_info['description'],
+                "tags": download_info['tags']
             }
         else:
-            # If the file was not found via the PostProcessor
-            logger.error(f"Download failed: File not found after download. Expected path: {downloaded_file}")
-            # Log directory contents again for debugging the failure case
-            logger.info(f"Files in directory after failed check: {os.listdir(DOWNLOADS_DIR)}")
-            raise Exception("File not found after download process completion.")
+             # This case should ideally be caught by the checks above, but is a final safety net
+             logger.error(f"Download failed: Identified path {downloaded_file} does not exist after checks.")
+             raise Exception("Downloaded file not found after processing.")
 
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         logger.error(f"YouTube download error: {error_msg}")
+        # Attempt cleanup of partial files on error
+        for item in os.listdir(DOWNLOADS_DIR):
+             if item.startswith(download_id):
+                 item_path = os.path.join(DOWNLOADS_DIR, item)
+                 try:
+                     if os.path.isfile(item_path):
+                          os.remove(item_path)
+                          logger.info(f"Cleaned up partial file on error: {item}")
+                     elif os.path.isdir(item_path):
+                         try:
+                             if not os.listdir(item_path):
+                                 os.rmdir(item_path)
+                                 logger.info(f"Cleaned up empty directory on error: {item}")
+                         except OSError:
+                              pass
+                 except Exception as cleanup_e:
+                      logger.warning(f"Failed to clean up item {item} on error: {cleanup_e}")
+
         return {
             "success": False,
             "error": error_msg
         }
     except Exception as e:
         logger.error(f"Download failed: {str(e)}")
+        # Attempt cleanup of partial files on error
+        for item in os.listdir(DOWNLOADS_DIR):
+             if item.startswith(download_id):
+                 item_path = os.path.join(DOWNLOADS_DIR, item)
+                 try:
+                     if os.path.isfile(item_path):
+                          os.remove(item_path)
+                          logger.info(f"Cleaned up partial file on error: {item}")
+                     elif os.path.isdir(item_path):
+                         try:
+                             if not os.listdir(item_path):
+                                 os.rmdir(item_path)
+                                 logger.info(f"Cleaned up empty directory on error: {item}")
+                         except OSError:
+                              pass
+                 except Exception as cleanup_e:
+                      logger.warning(f"Failed to clean up item {item} on error: {cleanup_e}")
+
         return {
             "success": False,
             "error": str(e)
@@ -263,6 +357,10 @@ async def get_file(
          media_type = 'audio/mp4'
     elif ext == '.mp3':
          media_type = 'audio/mpeg'
+    elif ext in ['.jpg', '.jpeg']:
+         media_type = 'image/jpeg'
+    elif ext == '.png':
+         media_type = 'image/png'
 
 
     return FileResponse(
@@ -299,6 +397,15 @@ async def cleanup_storage(
                     logger.info(f"Deleted old file: {filename}")
             except Exception as e:
                 logger.warning(f"Error cleaning up file {filename}: {e}")
+        # Optionally clean up empty directories during cleanup
+        elif os.path.isdir(file_path):
+             try:
+                 if not os.listdir(file_path):
+                     os.rmdir(file_path)
+                     logger.info(f"Cleaned up empty directory: {filename}")
+             except OSError:
+                  # Ignore if directory is not empty or cannot be removed
+                  pass
 
 
     return {
