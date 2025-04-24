@@ -152,6 +152,8 @@ async def download_video(
           logger.info("Extracting video info...")
           info = ydl.extract_info(request.url, download=True)
           downloaded_file = ydl.prepare_filename(info)
+          logger.info(f"Expected downloaded file path: {downloaded_file}")
+          logger.info(f"Files in directory: {os.listdir(DOWNLOADS_DIR)}")
           
           # Log format details for debugging
           if 'youtube.com/clip' in request.url.lower():
@@ -167,15 +169,23 @@ async def download_video(
           # Check if file exists (account for format changes)
           if not os.path.exists(downloaded_file):
               base, _ = os.path.splitext(downloaded_file)
-              for ext in ['.mp4', '.webm', '.mkv']:
-                  potential_file = base + ext
-                  if os.path.exists(potential_file):
-                      downloaded_file = potential_file
-                      logger.info(f"Found file with different extension: {downloaded_file}")
-                      break
+              fallback_extensions = ['.mp4', '.webm', '.mkv', '.m4a']
 
-          if not os.path.exists(downloaded_file):
-              raise Exception("File not found after download")
+              for ext in fallback_extensions:
+                potential_file = base + ext
+                if os.path.exists(potential_file):
+                    downloaded_file = potential_file
+                    logger.info(f"Found file with different extension: {downloaded_file}")
+                    break
+              else:
+                # Fallback based on custom file pattern if title extraction failed
+                title = info.get('title') or 'video'
+                fallback_file = os.path.join(DOWNLOADS_DIR, f"{download_id}-{title}.mp4")
+                if os.path.exists(fallback_file):
+                    downloaded_file = fallback_file
+                    logger.info(f"Found file using fallback pattern: {downloaded_file}")
+                else:
+                    raise Exception("File not found after download")
 
           logger.info(f"Download successful: {downloaded_file}")
 
@@ -218,6 +228,8 @@ async def download_video(
               with yt_dlp.YoutubeDL(alt_opts) as ydl2:
                   info = ydl2.extract_info(request.url, download=True)
                   downloaded_file = ydl2.prepare_filename(info)
+                  logger.info(f"Expected downloaded file path: {downloaded_file}")
+                  logger.info(f"Files in directory: {os.listdir(DOWNLOADS_DIR)}")
                   
                   # Log resolution info for fallback method
                   logger.info(f"Fallback - Selected format: {info.get('format_id', 'unknown')}")
