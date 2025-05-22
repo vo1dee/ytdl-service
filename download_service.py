@@ -12,6 +12,10 @@ import subprocess
 import secrets
 import time
 from datetime import datetime
+import pkg_resources
+import sys
+import asyncio
+from fastapi import BackgroundTasks
 
 # Enhanced logging
 logging.basicConfig(
@@ -24,6 +28,11 @@ logger = logging.getLogger("ytdl_service")
 DOWNLOADS_DIR = "/opt/ytdl_service/downloads"
 API_KEY_FILE = "/opt/ytdl_service/api_key.txt"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+
+# Add configuration for update check
+YTDLP_UPDATE_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+last_update_check = 0
+last_update_status = None
 
 # Handle API key
 def get_api_key():
@@ -69,6 +78,63 @@ class DownloadRequest(BaseModel):
     audio_only: bool = False
     max_height: int = 1080  # Max video height (e.g., 720, 1080, etc.)
 
+def check_and_update_ytdlp():
+    """Check if yt-dlp is up to date and update if necessary"""
+    try:
+        # Get current version
+        current_version = yt_dlp.version.__version__
+        
+        # Get latest version from PyPI
+        latest_version = subprocess.check_output(
+            [sys.executable, "-m", "pip", "index", "versions", "yt-dlp"],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True
+        )
+        
+        # Parse the output to get the latest version
+        latest_version = latest_version.split("LATEST: ")[1].split("\n")[0].strip()
+        
+        if latest_version > current_version:
+            logger.info(f"Updating yt-dlp from {current_version} to {latest_version}")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            logger.info("yt-dlp updated successfully")
+            return True, latest_version
+        return False, current_version
+    except Exception as e:
+        logger.error(f"Error checking/updating yt-dlp: {str(e)}")
+        return False, current_version
+
+async def periodic_ytdlp_update():
+    """Background task to periodically check and update yt-dlp"""
+    global last_update_check, last_update_status
+    
+    while True:
+        try:
+            current_time = time.time()
+            if current_time - last_update_check >= YTDLP_UPDATE_INTERVAL:
+                logger.info("Running periodic yt-dlp update check")
+                was_updated, version = check_and_update_ytdlp()
+                last_update_check = current_time
+                last_update_status = {
+                    "was_updated": was_updated,
+                    "version": version,
+                    "timestamp": datetime.now().isoformat()
+                }
+                logger.info(f"yt-dlp update check completed: {last_update_status}")
+            await asyncio.sleep(60)  # Check every minute if it's time for an update
+        except Exception as e:
+            logger.error(f"Error in periodic yt-dlp update: {str(e)}")
+            await asyncio.sleep(300)  # Wait 5 minutes before retrying on error
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize background tasks on startup"""
+    asyncio.create_task(periodic_ytdlp_update())
+
 @app.get("/health")
 async def health_check():
     # Public endpoint, no API key required
@@ -83,13 +149,15 @@ async def health_check():
         write_permission = os.access(DOWNLOADS_DIR, os.W_OK)
         read_permission = os.access(DOWNLOADS_DIR, os.R_OK)
 
-        # Check yt-dlp version
-        yt_dlp_version = yt_dlp.version.__version__
+        # Get current yt-dlp version without checking for updates
+        current_version = yt_dlp.version.__version__
 
         return {
             "status": "healthy",
             "ffmpeg_available": ffmpeg_available,
-            "yt_dlp_version": yt_dlp_version,
+            "yt_dlp_version": current_version,
+            "last_update_check": datetime.fromtimestamp(last_update_check).isoformat() if last_update_check else None,
+            "last_update_status": last_update_status,
             "downloads_dir": DOWNLOADS_DIR,
             "downloads_dir_writeable": write_permission,
             "downloads_dir_readable": read_permission,
