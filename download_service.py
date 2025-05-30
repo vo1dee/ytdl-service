@@ -301,7 +301,16 @@ async def download_video(
                     info = ydl.extract_info(request.url, download=False)
                     if info is None:
                         raise Exception("Failed to extract video information")
-                    logger.info(f"Successfully extracted video info: {info.get('title', 'Unknown Title')}")
+                    
+                    # Store clip info for description
+                    clip_info = {
+                        'title': info.get('title', 'Unknown Title'),
+                        'uploader': info.get('uploader', 'Unknown Uploader'),
+                        'original_video': info.get('webpage_url', ''),
+                        'clip_id': info.get('id', ''),
+                        'duration': info.get('duration', 0)
+                    }
+                    logger.info(f"Successfully extracted video info: {clip_info['title']}")
             except Exception as info_error:
                 logger.error(f"Error extracting video info: {str(info_error)}")
                 # Try alternative method for clips
@@ -321,7 +330,81 @@ async def download_video(
                 except Exception as alt_error:
                     logger.error(f"Alternative extraction failed: {str(alt_error)}")
                     raise Exception(f"Failed to extract clip information: {str(info_error)}. Alternative method also failed: {str(alt_error)}")
-        
+
+            # Update ydl_opts for clip download
+            ydl_opts.update({
+                'format': format_string,
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'merge_output_format': 'mp4',
+                'concurrent_fragment_downloads': 1,  # Reduce concurrent downloads for clips
+                'retries': 10,
+                'fragment_retries': 10,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'verbose': True,
+                'quiet': False,
+                'no_warnings': False,
+                'progress_hooks': [
+                    lambda d: logger.info(
+                        f"yt-dlp progress: {d.get('_percent_str', 'N/A')} {d.get('_eta_str', 'N/A')}"
+                    ) if d['status'] != 'finished' else logger.info("yt-dlp progress: Finished")
+                ],
+                'prefer_ffmpeg': True,
+                'postprocessor_args': {
+                    'ffmpeg': [
+                        '-movflags', 'faststart',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac',
+                        '-strict', 'experimental'
+                    ]
+                }
+            })
+
+            # Download the clip
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    logger.info("Starting clip download...")
+                    info = ydl.extract_info(request.url, download=True)
+                    if info is None:
+                        raise Exception("Failed to extract video information")
+                    
+                    # Store needed info
+                    download_info = {
+                        'title': info.get('title', 'Video'),
+                        'description': f"Clip: {info.get('title', 'Unknown')} from {info.get('uploader', 'Unknown')}'s video",
+                        'tags': info.get('tags', []),
+                        'duration': info.get('duration'),
+                        'uploader': info.get('uploader'),
+                        'expected_filepath': ydl.prepare_filename(info)
+                    }
+                    
+                    logger.info(f"Download completed. Expected filepath: {download_info['expected_filepath']}")
+            except Exception as download_error:
+                logger.error(f"Error during download: {str(download_error)}")
+                logger.info("Attempting fallback download method for clip...")
+                try:
+                    # Try with absolute minimal options
+                    fallback_opts = {
+                        'format': 'best',
+                        'outtmpl': output_template,
+                        'quiet': True,
+                        'no_warnings': True,
+                        'extract_flat': True,
+                        'force_generic_extractor': True,
+                        'concurrent_fragment_downloads': 1,
+                        'retries': 5,
+                        'fragment_retries': 5,
+                    }
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        info = ydl.extract_info(request.url, download=True)
+                        if info is None:
+                            raise Exception("Fallback download failed to extract info")
+                        logger.info("Fallback download successful")
+                except Exception as fallback_error:
+                    logger.error(f"Fallback download failed: {str(fallback_error)}")
+                    raise Exception(f"Download failed: {str(download_error)}. Fallback also failed: {str(fallback_error)}")
+
         # Adjust format based on request parameters
         if not is_clip:  # Only apply these if it's not a clip
             if request.audio_only:
@@ -453,7 +536,7 @@ async def download_video(
                     raise
 
         # Give the filesystem a moment to finalize writes
-        time.sleep(1)
+        time.sleep(2)  # Increased wait time for clips
 
         # Find the downloaded file
         files_in_dir = os.listdir(DOWNLOADS_DIR)
@@ -473,11 +556,11 @@ async def download_video(
                     # If it's a partial file, wait a bit longer for it to complete
                     if fname.endswith('.part'):
                         logger.info(f"Found partial file {fname}, waiting for completion...")
-                        time.sleep(5)  # Wait for potential completion
+                        time.sleep(10)  # Increased wait time for clips
                         if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
                             # Check if the file is still being written to
                             initial_size = os.path.getsize(fpath)
-                            time.sleep(2)
+                            time.sleep(5)  # Increased wait time for clips
                             if os.path.getsize(fpath) == initial_size:
                                 # File size hasn't changed, assume it's complete
                                 downloaded_file = fpath
