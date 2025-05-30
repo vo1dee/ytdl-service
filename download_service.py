@@ -342,24 +342,12 @@ async def download_video(
                         
                         if best_format:
                             logger.info(f"Selected best format: {best_height}p")
-                            # Use the specific format ID to ensure we get exactly this quality
-                            format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
+                            # Use a more reliable format string that includes fallbacks
+                            format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
                         else:
-                            # Try to find any high quality format
-                            logger.info("No specific format found, trying to find high quality format...")
-                            for fmt in formats:
-                                if fmt.get('height', 0) >= 720 and fmt.get('ext') == 'mp4':
-                                    best_format = fmt
-                                    best_height = fmt.get('height', 0)
-                                    logger.info(f"Found high quality format: {best_height}p")
-                                    break
-                            
-                            if best_format:
-                                format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
-                            else:
-                                # Fallback to high quality format if specific format not found
-                                format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                                logger.info("No high quality format found, using fallback format")
+                            # Fallback to high quality format if specific format not found
+                            format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                            logger.info("No specific format found, using fallback format")
                         
                         logger.info(f"Using format string for Shorts: {format_string}")
                 except Exception as e:
@@ -385,65 +373,47 @@ async def download_video(
                 'retries': 10,  # More retries
                 'fragment_retries': 10,  # More fragment retries
                 'retry_sleep': 5,  # Wait between retries
+                'ignoreerrors': True,  # Continue on errors
+                'no_warnings': True,  # Reduce noise
+                'quiet': True,  # Reduce noise
+                'verbose': False,  # Reduce noise
             })
-            
-            # Try to get video info first
+
+            # Try to get video info first with minimal options
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    logger.info("Attempting to extract video info first...")
+                logger.info("Attempting to extract video info first...")
+                with yt_dlp.YoutubeDL({
+                    'quiet': True,
+                    'no_warnings': True,
+                    'format': 'best',  # Use simplest format for info extraction
+                    'extract_flat': True,
+                    'force_generic_extractor': True,
+                }) as ydl:
                     info = ydl.extract_info(request.url, download=False)
                     if info is None:
                         raise Exception("Failed to extract video information")
                     
-                    # For shorts, verify we got the right quality
-                    if is_shorts:
-                        formats = info.get('formats', [])
-                        selected_format = None
-                        for fmt in formats:
-                            if fmt.get('format_id') == format_string.split('=')[1].split(']')[0]:
-                                selected_format = fmt
-                                break
-                        
-                        if selected_format:
-                            logger.info(f"Selected format details: {selected_format.get('height')}p, {selected_format.get('ext')}, {selected_format.get('format_note', '')}")
-                    
-                    # Check if it's from a live stream
-                    is_live_clip = info.get('is_live', False) or 'live' in info.get('webpage_url', '').lower()
-                    if is_live_clip:
-                        logger.info("Detected clip from live stream, applying live-specific settings")
-                        # Wait a bit longer for live stream processing
-                        time.sleep(5)
-                    
-                    # Store clip info for description
-                    clip_info = {
-                        'title': info.get('title', 'Unknown Title'),
-                        'uploader': info.get('uploader', 'Unknown Uploader'),
-                        'original_video': info.get('webpage_url', ''),
-                        'clip_id': info.get('id', ''),
-                        'duration': info.get('duration', 0),
-                        'is_live': is_live_clip,
-                        'is_shorts': is_shorts
-                    }
-                    logger.info(f"Successfully extracted video info: {clip_info['title']}")
+                    logger.info(f"Successfully extracted video info: {info.get('title', 'Unknown Title')}")
             except Exception as info_error:
                 logger.error(f"Error extracting video info: {str(info_error)}")
-                # Try alternative method for clips
+                logger.info("Attempting alternative clip extraction method...")
                 try:
-                    logger.info("Attempting alternative clip extraction method...")
-                    alt_opts = ydl_opts.copy()
-                    alt_opts.update({
-                        'format': 'best[height<=2160]',
+                    # Try with absolute minimal options
+                    with yt_dlp.YoutubeDL({
+                        'quiet': True,
+                        'no_warnings': True,
+                        'format': 'best',
                         'extract_flat': True,
                         'force_generic_extractor': True,
-                    })
-                    with yt_dlp.YoutubeDL(alt_opts) as ydl:
+                        'ignoreerrors': True,
+                    }) as ydl:
                         info = ydl.extract_info(request.url, download=False)
                         if info is None:
                             raise Exception("Alternative extraction also failed")
                         logger.info("Alternative extraction successful")
                 except Exception as alt_error:
                     logger.error(f"Alternative extraction failed: {str(alt_error)}")
-                    raise Exception(f"Failed to extract clip information: {str(info_error)}. Alternative method also failed: {str(alt_error)}")
+                    # Don't raise here, continue with download attempt
 
         # Adjust format based on request parameters
         if not (is_clip or is_shorts):  # Only apply these if it's not a clip or shorts
