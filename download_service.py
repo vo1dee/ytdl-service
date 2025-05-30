@@ -344,10 +344,28 @@ async def download_video(
                     
                     if best_format:
                         logger.info(f"Selected best format: {best_height}p")
-                        # For clips, use format_id directly if available
-                        if is_clip and best_format.get('format_id'):
-                            format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
-                            logger.info(f"Using direct format_id for clip: {best_format['format_id']}")
+                        # For clips, use a more specific format selection
+                        if is_clip:
+                            format_string = f"bestvideo[height={best_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/best[height={best_height}][ext=mp4]/best"
+                            # Add specific YouTube extractor options for clips
+                            ydl_opts.update({
+                                'extractor_args': {
+                                    'youtube': {
+                                        'skip': ['dash', 'hls'],
+                                        'player_client': ['android', 'web'],
+                                        'player_skip': ['js', 'configs', 'webpage'],
+                                        'player_params': {
+                                            'hl': 'en',
+                                            'gl': 'US',
+                                        },
+                                    }
+                                },
+                                'format_sort': [f'res:{best_height}', 'ext:mp4:m4a', 'size', 'br', 'asr'],
+                                'format_selection': 'best',
+                                'format_selection_whitelist': ['mp4'],
+                                'format_selection_blacklist': ['dash', 'hls'],
+                            })
+                            logger.info(f"Using enhanced format selection for clip: {format_string}")
                         else:
                             # Use a more reliable format string that includes fallbacks
                             format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
