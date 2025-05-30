@@ -266,9 +266,9 @@ async def download_video(
         is_clip = 'youtube.com/clip' in request.url or 'youtu.be/clip' in request.url
         if is_clip:
             logger.info("Detected YouTube clip URL, applying clip-specific settings")
-            # For clips, we'll use a simpler format to ensure compatibility
-            format_string = 'best[ext=mp4]/best'
-            logger.info(f"Using simplified format string for clip: {format_string}")
+            # For clips, we'll use a more specific format to ensure we get the right video
+            format_string = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best'
+            logger.info(f"Using format string for clip: {format_string}")
             
             # Add clip-specific options
             ydl_opts = {
@@ -318,7 +318,7 @@ async def download_video(
                     logger.info("Attempting alternative clip extraction method...")
                     alt_opts = ydl_opts.copy()
                     alt_opts.update({
-                        'format': 'best',
+                        'format': 'best[height<=1080]',
                         'extract_flat': True,
                         'force_generic_extractor': True,
                     })
@@ -354,11 +354,18 @@ async def download_video(
                 'postprocessor_args': {
                     'ffmpeg': [
                         '-movflags', 'faststart',
-                        '-c:v', 'copy',
+                        '-c:v', 'libx264',  # Use x264 encoder instead of copy
+                        '-preset', 'medium',
+                        '-crf', '18',  # Higher quality (lower CRF)
                         '-c:a', 'aac',
+                        '-b:a', '192k',  # Higher audio bitrate
                         '-strict', 'experimental'
                     ]
-                }
+                },
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }]
             })
 
             # Download the clip
@@ -386,7 +393,7 @@ async def download_video(
                 try:
                     # Try with absolute minimal options
                     fallback_opts = {
-                        'format': 'best',
+                        'format': 'best[height<=1080]',
                         'outtmpl': output_template,
                         'quiet': True,
                         'no_warnings': True,
@@ -395,6 +402,21 @@ async def download_video(
                         'concurrent_fragment_downloads': 1,
                         'retries': 5,
                         'fragment_retries': 5,
+                        'postprocessor_args': {
+                            'ffmpeg': [
+                                '-movflags', 'faststart',
+                                '-c:v', 'libx264',
+                                '-preset', 'medium',
+                                '-crf', '18',  # Higher quality (lower CRF)
+                                '-c:a', 'aac',
+                                '-b:a', '192k',  # Higher audio bitrate
+                                '-strict', 'experimental'
+                            ]
+                        },
+                        'postprocessors': [{
+                            'key': 'FFmpegVideoConvertor',
+                            'preferedformat': 'mp4',
+                        }]
                     }
                     with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                         info = ydl.extract_info(request.url, download=True)
@@ -659,6 +681,25 @@ async def download_video(
                     logger.info(f"Renamed partial file to: {os.path.basename(new_path)}")
                 except Exception as e:
                     logger.warning(f"Failed to rename partial file: {e}")
+            
+            # Verify the file is a valid video file
+            try:
+                # Use ffprobe to check the file
+                ffprobe_cmd = [
+                    'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height,codec_name',
+                    '-of', 'json',
+                    downloaded_file
+                ]
+                result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    logger.info(f"Video file verification successful: {result.stdout}")
+                else:
+                    logger.warning(f"Video file verification failed: {result.stderr}")
+            except Exception as e:
+                logger.warning(f"Error verifying video file: {e}")
             
             logger.info(f"Download successful: {downloaded_file}")
             
