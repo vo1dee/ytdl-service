@@ -228,6 +228,58 @@ async def download_video(
             # For clips, we'll use a simpler format to ensure compatibility
             format_string = 'best[ext=mp4]/best'
             logger.info(f"Using simplified format string for clip: {format_string}")
+            
+            # Add clip-specific options
+            ydl_opts = {
+                'format': format_string,
+                'extract_flat': False,
+                'force_generic_extractor': False,
+                'extractor_args': {
+                    'youtube': {
+                        'skip': ['dash', 'hls'],
+                        'player_client': ['android', 'web'],
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                },
+                'socket_timeout': 30,
+                'extractor_retries': 5,
+                'ignoreerrors': True,
+                'no_color': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Fetch-Mode': 'navigate',
+                }
+            }
+            
+            # Try to get video info first
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    logger.info("Attempting to extract video info first...")
+                    info = ydl.extract_info(request.url, download=False)
+                    if info is None:
+                        raise Exception("Failed to extract video information")
+                    logger.info(f"Successfully extracted video info: {info.get('title', 'Unknown Title')}")
+            except Exception as info_error:
+                logger.error(f"Error extracting video info: {str(info_error)}")
+                # Try alternative method for clips
+                try:
+                    logger.info("Attempting alternative clip extraction method...")
+                    alt_opts = ydl_opts.copy()
+                    alt_opts.update({
+                        'format': 'best',
+                        'extract_flat': True,
+                        'force_generic_extractor': True,
+                    })
+                    with yt_dlp.YoutubeDL(alt_opts) as ydl:
+                        info = ydl.extract_info(request.url, download=False)
+                        if info is None:
+                            raise Exception("Alternative extraction also failed")
+                        logger.info("Alternative extraction successful")
+                except Exception as alt_error:
+                    logger.error(f"Alternative extraction failed: {str(alt_error)}")
+                    raise Exception(f"Failed to extract clip information: {str(info_error)}. Alternative method also failed: {str(alt_error)}")
         
         # Adjust format based on request parameters
         if not is_clip:  # Only apply these if it's not a clip
@@ -236,8 +288,9 @@ async def download_video(
             elif request.max_height and request.max_height > 0:
                 # Apply max height constraint to video format
                 format_string = f'bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
-
+        
         logger.info(f"Using format string: {format_string}")
+        ydl_opts['format'] = format_string
 
         # Setup yt-dlp options
         ydl_opts = {
@@ -260,14 +313,6 @@ async def download_video(
             ],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            },
-            # Add these new options for better clip handling
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_client': ['android', 'web'],
-                    'player_skip': ['js', 'configs', 'webpage'],
-                }
             },
             'socket_timeout': 30,
             'extractor_retries': 5,
@@ -325,19 +370,46 @@ async def download_video(
         # Download the video and get info
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             logger.info(f"Starting extraction and download with options: {ydl_opts}")
-            info = ydl.extract_info(request.url, download=True)
-            
-            # Store needed info
-            download_info = {
-                'title': info.get('title', 'Video'),
-                'description': info.get('description', ''),
-                'tags': info.get('tags', []),
-                'duration': info.get('duration'),
-                'uploader': info.get('uploader'),
-                'expected_filepath': ydl.prepare_filename(info)
-            }
-            
-            logger.info(f"Download completed. Expected filepath: {download_info['expected_filepath']}")
+            try:
+                info = ydl.extract_info(request.url, download=True)
+                if info is None:
+                    raise Exception("Failed to extract video information")
+                
+                # Store needed info
+                download_info = {
+                    'title': info.get('title', 'Video'),
+                    'description': info.get('description', ''),
+                    'tags': info.get('tags', []),
+                    'duration': info.get('duration'),
+                    'uploader': info.get('uploader'),
+                    'expected_filepath': ydl.prepare_filename(info)
+                }
+                
+                logger.info(f"Download completed. Expected filepath: {download_info['expected_filepath']}")
+            except Exception as download_error:
+                logger.error(f"Error during download: {str(download_error)}")
+                if is_clip:
+                    logger.info("Attempting fallback download method for clip...")
+                    try:
+                        # Try with absolute minimal options
+                        fallback_opts = {
+                            'format': 'best',
+                            'outtmpl': output_template,
+                            'quiet': True,
+                            'no_warnings': True,
+                            'extract_flat': True,
+                            'force_generic_extractor': True,
+                        }
+                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                            info = ydl.extract_info(request.url, download=True)
+                            if info is None:
+                                raise Exception("Fallback download failed to extract info")
+                            logger.info("Fallback download successful")
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback download failed: {str(fallback_error)}")
+                        raise Exception(f"Download failed: {str(download_error)}. Fallback also failed: {str(fallback_error)}")
+                else:
+                    raise
 
         # Give the filesystem a moment to finalize writes
         time.sleep(1)
