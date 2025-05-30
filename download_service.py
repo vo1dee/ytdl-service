@@ -335,27 +335,38 @@ async def download_video(
                         # Find the best format with highest resolution
                         for fmt in formats:
                             height = fmt.get('height', 0)
-                            if height > best_height and fmt.get('ext') == 'mp4':
+                            if height and height > best_height and fmt.get('ext') == 'mp4':
                                 best_format = fmt
                                 best_height = height
+                                logger.info(f"Found format: {height}p, format_id: {fmt.get('format_id')}, note: {fmt.get('format_note', '')}")
                         
                         if best_format:
-                            logger.info(f"Found best format: {best_height}p")
+                            logger.info(f"Selected best format: {best_height}p")
                             # Use the specific format ID to ensure we get exactly this quality
                             format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
                         else:
-                            # Fallback to high quality format if specific format not found
-                            format_string = 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                            # Try to find any high quality format
+                            logger.info("No specific format found, trying to find high quality format...")
+                            for fmt in formats:
+                                if fmt.get('height', 0) >= 720 and fmt.get('ext') == 'mp4':
+                                    best_format = fmt
+                                    best_height = fmt.get('height', 0)
+                                    logger.info(f"Found high quality format: {best_height}p")
+                                    break
+                            
+                            if best_format:
+                                format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
+                            else:
+                                # Fallback to high quality format if specific format not found
+                                format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                                logger.info("No high quality format found, using fallback format")
                         
                         logger.info(f"Using format string for Shorts: {format_string}")
                 except Exception as e:
                     logger.error(f"Error analyzing formats: {str(e)}")
-                    # Fallback to high quality format
-                    format_string = 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                    # Fallback to high quality format with more specific options
+                    format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
                     logger.info(f"Using fallback format string: {format_string}")
-            else:
-                format_string = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
-                logger.info("Using format string for regular clips")
             
             # Update ydl_opts for clips/shorts
             ydl_opts.update({
@@ -370,6 +381,10 @@ async def download_video(
                     }
                 },
                 'concurrent_fragment_downloads': 1,  # Reduce concurrent downloads for clips
+                'socket_timeout': 30,  # Increased timeout
+                'retries': 10,  # More retries
+                'fragment_retries': 10,  # More fragment retries
+                'retry_sleep': 5,  # Wait between retries
             })
             
             # Try to get video info first
