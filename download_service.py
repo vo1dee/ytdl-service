@@ -317,9 +317,15 @@ async def download_video(
         
         if is_clip or is_shorts:
             logger.info("Detected YouTube clip/shorts URL, applying specific settings")
-            # For clips and shorts, we'll use a more specific format
-            format_string = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
-            logger.info(f"Using format string for clip/shorts: {format_string}")
+            # For shorts, we'll use a more specific format to ensure we get the highest quality
+            if is_shorts:
+                format_string = 'bestvideo[height>=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                logger.info("Using format string optimized for Shorts")
+            else:
+                format_string = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
+                logger.info("Using format string for regular clips")
+            
+            logger.info(f"Using format string: {format_string}")
             
             # Update ydl_opts for clips/shorts
             ydl_opts.update({
