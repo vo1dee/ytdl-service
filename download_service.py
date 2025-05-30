@@ -279,20 +279,74 @@ def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
     """Try different format selection strategies until one works"""
     
     strategies = [
-        # Strategy 1: Direct format IDs (most aggressive)
-        lambda best_video, best_audio: f"{best_video['format_id']}+{best_audio['format_id']}",
+        # Strategy 1: Direct format IDs with specific options
+        lambda best_video, best_audio: {
+            'format': f"{best_video['format_id']}+{best_audio['format_id']}",
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'player_skip': [],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US',
+                        'enablejsapi': '1',
+                        'origin': 'https://www.youtube.com'
+                    }
+                }
+            }
+        },
         
-        # Strategy 2: Force specific format with height
-        lambda best_video, best_audio: f"bestvideo[format_id={best_video['format_id']}]+bestaudio[format_id={best_audio['format_id']}]",
+        # Strategy 2: Force specific format with additional options
+        lambda best_video, best_audio: {
+            'format': f"bestvideo[format_id={best_video['format_id']}]+bestaudio[format_id={best_audio['format_id']}]",
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'mweb'],
+                    'player_skip': [],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US'
+                    }
+                }
+            }
+        },
         
-        # Strategy 3: Height-based with specific codec
-        lambda best_video, best_audio: f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
+        # Strategy 3: Height-based with specific codec and options
+        lambda best_video, best_audio: {
+            'format': f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android'],
+                    'player_skip': [],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US'
+                    }
+                }
+            }
+        },
         
         # Strategy 4: Less restrictive height-based
-        lambda best_video, best_audio: f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4]+bestaudio[ext=m4a]",
+        lambda best_video, best_audio: {
+            'format': f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4]+bestaudio[ext=m4a]",
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                    'player_skip': []
+                }
+            }
+        },
         
-        # Strategy 5: Generic fallback
-        lambda best_video, best_audio: 'bestvideo+bestaudio/best'
+        # Strategy 5: Generic fallback with minimal options
+        lambda best_video, best_audio: {
+            'format': 'bestvideo+bestaudio/best',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web'],
+                    'player_skip': []
+                }
+            }
+        }
     ]
     
     # Get best formats first
@@ -326,12 +380,12 @@ def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
     # Try each strategy
     for i, strategy in enumerate(strategies, 1):
         try:
-            format_string = strategy(best_video, best_audio)
-            logger.info(f"Attempting download strategy {i}: {format_string}")
+            strategy_opts = strategy(best_video, best_audio)
+            logger.info(f"Attempting download strategy {i}: {strategy_opts['format']}")
             
             ydl_opts_copy = ydl_opts.copy()
             ydl_opts_copy.update({
-                'format': format_string,
+                'format': strategy_opts['format'],
                 'format_sort': [
                     f'res:{best_video.get("height", 1080)}',
                     'fps:30',
@@ -341,14 +395,9 @@ def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
                     'size',
                     'br'
                 ],
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web', 'mweb'],
-                        'player_skip': [],  # Don't skip any player components
-                    }
-                },
+                'extractor_args': strategy_opts['extractor_args'],
                 'concurrent_fragment_downloads': 1,
-                'retries': 20,  # More retries
+                'retries': 20,
                 'fragment_retries': 20,
                 'retry_sleep': 10,
                 'socket_timeout': 60,
@@ -359,7 +408,9 @@ def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
                     'Sec-Fetch-Mode': 'navigate',
                     'Sec-Fetch-Site': 'none',
                     'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1'
+                    'Upgrade-Insecure-Requests': '1',
+                    'Origin': 'https://www.youtube.com',
+                    'Referer': 'https://www.youtube.com/'
                 }
             })
             
