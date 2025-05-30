@@ -16,13 +16,40 @@ import pkg_resources
 import sys
 import asyncio
 from fastapi import BackgroundTasks
+import logging.handlers
 
 # Enhanced logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+import logging.handlers
+
+# Create logs directory if it doesn't exist
+LOGS_DIR = "/var/log"
+os.makedirs(LOGS_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOGS_DIR, "ytdl_service.log")
+
+# Configure logging
 logger = logging.getLogger("ytdl_service")
+logger.setLevel(logging.INFO)
+
+# Create formatters
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# File handler with rotation
+file_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5,
+    encoding='utf-8'
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+# Prevent propagation to root logger
+logger.propagate = False
 
 # Configuration
 DOWNLOADS_DIR = "/opt/ytdl_service/downloads"
@@ -194,13 +221,21 @@ async def download_video(
     try:
         logger.info(f"Starting download for URL: {request.url}")
         
+        # Check if it's a YouTube clip
+        is_clip = 'youtube.com/clip' in request.url or 'youtu.be/clip' in request.url
+        if is_clip:
+            logger.info("Detected YouTube clip URL, applying clip-specific settings")
+            # For clips, we'll use a simpler format to ensure compatibility
+            format_string = 'best[ext=mp4]/best'
+            logger.info(f"Using simplified format string for clip: {format_string}")
+        
         # Adjust format based on request parameters
-        format_string = request.format
-        if request.audio_only:
-            format_string = 'bestaudio[ext=m4a]/bestaudio/best'
-        elif request.max_height and request.max_height > 0:
-            # Apply max height constraint to video format
-            format_string = f'bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
+        if not is_clip:  # Only apply these if it's not a clip
+            if request.audio_only:
+                format_string = 'bestaudio[ext=m4a]/bestaudio/best'
+            elif request.max_height and request.max_height > 0:
+                # Apply max height constraint to video format
+                format_string = f'bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
 
         logger.info(f"Using format string: {format_string}")
 
@@ -211,8 +246,8 @@ async def download_video(
             'restrictfilenames': True,
             'merge_output_format': 'mp4',  # Force MP4 output format for merged streams
             'concurrent_fragment_downloads': 3,
-            'retries': 5,
-            'fragment_retries': 5,
+            'retries': 10,  # Increased retries
+            'fragment_retries': 10,  # Increased fragment retries
             'geo_bypass': True,
             'nocheckcertificate': True,
             'verbose': True,
@@ -225,7 +260,21 @@ async def download_video(
             ],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-            }
+            },
+            # Add these new options for better clip handling
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_client': ['android', 'web'],
+                    'player_skip': ['js', 'configs', 'webpage'],
+                }
+            },
+            'socket_timeout': 30,
+            'extractor_retries': 5,
+            'ignoreerrors': True,
+            'no_color': True,
+            'extract_flat': False,
+            'force_generic_extractor': False
         }
 
         # Add subtitles if requested
@@ -370,12 +419,27 @@ async def download_video(
         error_msg = str(e)
         logger.error(f"YouTube download error: {error_msg}")
         
+        # Add specific handling for clip errors
+        if is_clip:
+            logger.error("Clip download failed, attempting fallback method...")
+            try:
+                # Try with a simpler format as fallback
+                ydl_opts['format'] = 'best'
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(request.url, download=True)
+                    logger.info("Fallback download successful")
+                    # Continue with normal processing...
+            except Exception as fallback_error:
+                logger.error(f"Fallback download also failed: {str(fallback_error)}")
+                error_msg = f"Clip download failed: {error_msg}. Fallback also failed: {str(fallback_error)}"
+        
         # Cleanup any partial files
         cleanup_files(download_id)
         
         return {
             "success": False,
-            "error": error_msg
+            "error": error_msg,
+            "is_clip": is_clip
         }
     except Exception as e:
         logger.error(f"Download failed: {str(e)}")
