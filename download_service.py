@@ -101,12 +101,12 @@ app = FastAPI()
 
 class DownloadRequest(BaseModel):
     url: str
-    format: str = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best'
+    format: str = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
     
     # Add additional optional parameters
     subtitles: bool = False
     audio_only: bool = False
-    max_height: int = 1080  # Max video height (e.g., 720, 1080, etc.)
+    max_height: int = 2160  # Max video height (e.g., 720, 1080, 2160, etc.)
 
 def check_and_update_ytdlp():
     """Check if yt-dlp is up to date and update if necessary"""
@@ -267,7 +267,7 @@ async def download_video(
         if is_clip:
             logger.info("Detected YouTube clip URL, applying clip-specific settings")
             # For clips, we'll use a more specific format to ensure we get the right video
-            format_string = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best'
+            format_string = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
             logger.info(f"Using format string for clip: {format_string}")
             
             # Add clip-specific options
@@ -302,13 +302,21 @@ async def download_video(
                     if info is None:
                         raise Exception("Failed to extract video information")
                     
+                    # Check if it's from a live stream
+                    is_live_clip = info.get('is_live', False) or 'live' in info.get('webpage_url', '').lower()
+                    if is_live_clip:
+                        logger.info("Detected clip from live stream, applying live-specific settings")
+                        # Wait a bit longer for live stream processing
+                        time.sleep(5)
+                    
                     # Store clip info for description
                     clip_info = {
                         'title': info.get('title', 'Unknown Title'),
                         'uploader': info.get('uploader', 'Unknown Uploader'),
                         'original_video': info.get('webpage_url', ''),
                         'clip_id': info.get('id', ''),
-                        'duration': info.get('duration', 0)
+                        'duration': info.get('duration', 0),
+                        'is_live': is_live_clip
                     }
                     logger.info(f"Successfully extracted video info: {clip_info['title']}")
             except Exception as info_error:
@@ -353,12 +361,15 @@ async def download_video(
                 'prefer_ffmpeg': True,
                 'postprocessor_args': {
                     'ffmpeg': [
-                        '-movflags', 'faststart',
-                        '-c:v', 'libx264',  # Use x264 encoder instead of copy
-                        '-preset', 'medium',
-                        '-crf', '18',  # Higher quality (lower CRF)
-                        '-c:a', 'aac',
-                        '-b:a', '192k',  # Higher audio bitrate
+                        '-movflags', 'faststart',  # Enable fast start for web playback
+                        '-c:v', 'libx264',  # Use H.264 codec for maximum compatibility
+                        '-preset', 'medium',  # Balance between quality and encoding speed
+                        '-crf', '18',  # High quality (lower CRF = better quality)
+                        '-profile:v', 'high',  # Use high profile for better quality
+                        '-level', '4.1',  # Compatibility level for most devices
+                        '-c:a', 'aac',  # Use AAC audio codec for maximum compatibility
+                        '-b:a', '192k',  # High quality audio
+                        '-ar', '48000',  # Standard audio sample rate
                         '-strict', 'experimental'
                     ]
                 },
@@ -433,7 +444,7 @@ async def download_video(
                 format_string = 'bestaudio[ext=m4a]/bestaudio/best'
             elif request.max_height and request.max_height > 0:
                 # Apply max height constraint to video format
-                format_string = f'bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
+                format_string = f'bestvideo[height<={request.max_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
         
         logger.info(f"Using format string: {format_string}")
         ydl_opts['format'] = format_string
@@ -465,7 +476,26 @@ async def download_video(
             'ignoreerrors': True,
             'no_color': True,
             'extract_flat': False,
-            'force_generic_extractor': False
+            'force_generic_extractor': False,
+            'prefer_ffmpeg': True,
+            'postprocessor_args': {
+                'ffmpeg': [
+                    '-movflags', 'faststart',  # Enable fast start for web playback
+                    '-c:v', 'libx264',  # Use H.264 codec for maximum compatibility
+                    '-preset', 'medium',  # Balance between quality and encoding speed
+                    '-crf', '18',  # High quality (lower CRF = better quality)
+                    '-profile:v', 'high',  # Use high profile for better quality
+                    '-level', '4.1',  # Compatibility level for most devices
+                    '-c:a', 'aac',  # Use AAC audio codec for maximum compatibility
+                    '-b:a', '192k',  # High quality audio
+                    '-ar', '48000',  # Standard audio sample rate
+                    '-strict', 'experimental'
+                ]
+            },
+            'postprocessors': [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }]
         }
 
         # Add subtitles if requested
@@ -558,7 +588,7 @@ async def download_video(
                     raise
 
         # Give the filesystem a moment to finalize writes
-        time.sleep(2)  # Increased wait time for clips
+        time.sleep(5)  # Increased wait time for live stream clips
 
         # Find the downloaded file
         files_in_dir = os.listdir(DOWNLOADS_DIR)
