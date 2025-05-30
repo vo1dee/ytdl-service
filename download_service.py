@@ -56,10 +56,13 @@ DOWNLOADS_DIR = "/opt/ytdl_service/downloads"
 API_KEY_FILE = "/opt/ytdl_service/api_key.txt"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-# Add configuration for update check
+# Add configuration for update check and cleanup
 YTDLP_UPDATE_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
+CLEANUP_INTERVAL = 60 * 60  # 1 hour in seconds
+FILE_MAX_AGE = 24 * 60 * 60  # 24 hours in seconds
 last_update_check = 0
 last_update_status = None
+last_cleanup_time = 0
 
 # Handle API key
 def get_api_key():
@@ -135,13 +138,47 @@ def check_and_update_ytdlp():
         logger.error(f"Error checking/updating yt-dlp: {str(e)}")
         return False, current_version
 
-async def periodic_ytdlp_update():
-    """Background task to periodically check and update yt-dlp"""
+async def cleanup_old_files():
+    """Clean up files older than FILE_MAX_AGE"""
+    global last_cleanup_time
+    current_time = time.time()
+    
+    if current_time - last_cleanup_time < CLEANUP_INTERVAL:
+        return
+    
+    logger.info("Running periodic cleanup of old files...")
+    deleted_count = 0
+    saved_space = 0
+    
+    try:
+        for filename in os.listdir(DOWNLOADS_DIR):
+            file_path = os.path.join(DOWNLOADS_DIR, filename)
+            if os.path.isfile(file_path):
+                try:
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > FILE_MAX_AGE:
+                        file_size = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        deleted_count += 1
+                        saved_space += file_size
+                        logger.info(f"Cleaned up old file: {filename} (age: {round(file_age/3600, 1)} hours)")
+                except Exception as e:
+                    logger.warning(f"Error cleaning up file {filename}: {e}")
+        
+        logger.info(f"Cleanup completed: {deleted_count} files deleted, {round(saved_space/(1024*1024), 2)} MB saved")
+        last_cleanup_time = current_time
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
+
+async def periodic_tasks():
+    """Background task to periodically check for updates and cleanup"""
     global last_update_check, last_update_status
     
     while True:
         try:
             current_time = time.time()
+            
+            # Check for yt-dlp updates
             if current_time - last_update_check >= YTDLP_UPDATE_INTERVAL:
                 logger.info("Running periodic yt-dlp update check")
                 was_updated, version = check_and_update_ytdlp()
@@ -152,15 +189,19 @@ async def periodic_ytdlp_update():
                     "timestamp": datetime.now().isoformat()
                 }
                 logger.info(f"yt-dlp update check completed: {last_update_status}")
-            await asyncio.sleep(60)  # Check every minute if it's time for an update
+            
+            # Run cleanup
+            await cleanup_old_files()
+            
+            await asyncio.sleep(60)  # Check every minute
         except Exception as e:
-            logger.error(f"Error in periodic yt-dlp update: {str(e)}")
+            logger.error(f"Error in periodic tasks: {str(e)}")
             await asyncio.sleep(300)  # Wait 5 minutes before retrying on error
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize background tasks on startup"""
-    asyncio.create_task(periodic_ytdlp_update())
+    asyncio.create_task(periodic_tasks())
 
 @app.get("/health")
 async def health_check():
@@ -422,38 +463,54 @@ async def download_video(
         potential_files = [f for f in files_in_dir if f.startswith(f"{download_id}.")]
         
         if not potential_files:
-            logger.error(f"No file found with ID {download_id} in {DOWNLOADS_DIR}")
-            raise Exception("Downloaded file not found or named as expected.")
-        
-        # If multiple files, find the main video file (should be .mp4 for merged output)
-        downloaded_file = None
-        if len(potential_files) == 1:
-            downloaded_file = os.path.join(DOWNLOADS_DIR, potential_files[0])
-        else:
-            # Look for the MP4 file or the largest file
-            logger.info(f"Multiple files found for ID {download_id}: {potential_files}")
+            logger.info("No file found with exact ID match, searching for recently modified files...")
+            # Get all files and their modification times
+            file_times = []
+            for fname in files_in_dir:
+                fpath = os.path.join(DOWNLOADS_DIR, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                        file_times.append((fpath, mtime))
+                    except Exception as e:
+                        logger.warning(f"Error getting mtime for {fname}: {e}")
             
-            # Prefer MP4 files
-            mp4_files = [f for f in potential_files if f.endswith('.mp4')]
-            if mp4_files:
-                downloaded_file = os.path.join(DOWNLOADS_DIR, mp4_files[0])
-                logger.info(f"Selected MP4 file: {downloaded_file}")
-            else:
-                # Otherwise get the largest file
-                max_size = -1
-                for fname in potential_files:
-                    fpath = os.path.join(DOWNLOADS_DIR, fname)
-                    if os.path.isfile(fpath):
-                        size = os.path.getsize(fpath)
-                        if size > max_size:
-                            max_size = size
-                            downloaded_file = fpath
-                
-                if downloaded_file:
-                    logger.info(f"Selected largest file: {downloaded_file}")
-                else:
-                    logger.error(f"Could not identify a valid downloaded file")
-                    raise Exception("Downloaded file identification failed")
+            # Sort by modification time, newest first
+            file_times.sort(key=lambda x: x[1], reverse=True)
+            
+            # Look at the most recently modified files
+            recent_files = [f[0] for f in file_times[:5]]  # Check last 5 modified files
+            logger.info(f"Most recently modified files: {recent_files}")
+            
+            # Try to find a valid video file
+            for fpath in recent_files:
+                if os.path.getsize(fpath) > 0:  # Ensure file has content
+                    ext = os.path.splitext(fpath)[1].lower()
+                    if ext in ['.mp4', '.webm', '.mkv']:  # Common video extensions
+                        downloaded_file = fpath
+                        logger.info(f"Found recently downloaded file: {downloaded_file}")
+                        break
+        
+        if not downloaded_file:
+            # If still no file found, try to find any video file that was modified in the last minute
+            current_time = time.time()
+            for fname in files_in_dir:
+                fpath = os.path.join(DOWNLOADS_DIR, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        mtime = os.path.getmtime(fpath)
+                        if current_time - mtime < 60:  # Modified in last minute
+                            ext = os.path.splitext(fpath)[1].lower()
+                            if ext in ['.mp4', '.webm', '.mkv'] and os.path.getsize(fpath) > 0:
+                                downloaded_file = fpath
+                                logger.info(f"Found recently modified video file: {downloaded_file}")
+                                break
+                    except Exception as e:
+                        logger.warning(f"Error checking file {fname}: {e}")
+        
+        if not downloaded_file:
+            logger.error(f"No suitable downloaded file found in {DOWNLOADS_DIR}")
+            raise Exception("Downloaded file not found or named as expected.")
         
         # Verify the file exists and has content
         if downloaded_file and os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
@@ -585,40 +642,47 @@ async def cleanup_storage(
     api_key: str = Depends(verify_api_key)
 ):
     """Clean up old files to free storage space"""
-    max_age_days = 7  # Files older than this will be deleted
-    max_age_seconds = max_age_days * 24 * 60 * 60
-    now = time.time()
-    deleted_count = 0
-    saved_space = 0
+    await cleanup_old_files()
+    
+    # Get storage info after cleanup
+    try:
+        total_size = 0
+        file_count = 0
+        files = []
 
-    for filename in os.listdir(DOWNLOADS_DIR):
-        file_path = os.path.join(DOWNLOADS_DIR, filename)
-        if os.path.isfile(file_path):
-            try:
-                file_age = now - os.path.getmtime(file_path)
-                if file_age > max_age_seconds:
-                    file_size = os.path.getsize(file_path)
-                    saved_space += file_size
-                    os.remove(file_path)
-                    deleted_count += 1
-                    logger.info(f"Deleted old file: {filename}")
-            except Exception as e:
-                logger.warning(f"Error cleaning up file {filename}: {e}")
-        # Clean up empty directories
-        elif os.path.isdir(file_path):
-            try:
-                if not os.listdir(file_path):
-                    os.rmdir(file_path)
-                    logger.info(f"Cleaned up empty directory: {filename}")
-            except OSError:
-                pass
+        for filename in os.listdir(DOWNLOADS_DIR):
+            file_path = os.path.join(DOWNLOADS_DIR, filename)
+            if os.path.isfile(file_path):
+                try:
+                    size = os.path.getsize(file_path)
+                    modified = os.path.getmtime(file_path)
+                    total_size += size
+                    file_count += 1
 
-    return {
-        "deleted_files": deleted_count,
-        "saved_space_bytes": saved_space,
-        "saved_space_mb": round(saved_space / (1024 * 1024), 2),
-        "timestamp": datetime.now().isoformat()
-    }
+                    files.append({
+                        "filename": filename,
+                        "size_bytes": size,
+                        "size_mb": round(size / (1024 * 1024), 2),
+                        "modified_timestamp": modified,
+                        "modified_iso": datetime.fromtimestamp(modified).isoformat(),
+                        "age_hours": round((time.time() - modified) / 3600, 1)
+                    })
+                except Exception as e:
+                    logger.error(f"Error processing file {filename}: {str(e)}")
+
+        # Sort files by modification time, newest first
+        files.sort(key=lambda x: x['modified_timestamp'], reverse=True)
+
+        return {
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "file_count": file_count,
+            "files": files,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Storage info error: {str(e)}")
+        return {"error": str(e)}
 
 @app.get("/storage")
 async def get_storage_info(
