@@ -318,6 +318,9 @@ async def download_video(
         if is_clip or is_shorts:
             logger.info("Detected YouTube clip/shorts URL, applying specific settings")
             
+            # Initialize format_string with a default value
+            format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+            
             # For shorts, we'll analyze available formats first
             if is_shorts:
                 logger.info("Analyzing available formats for Shorts...")
