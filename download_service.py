@@ -279,37 +279,116 @@ def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
     """Try different format selection strategies until one works"""
     
     strategies = [
-        # Strategy 1: Best video + best audio
-        'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio',
+        # Strategy 1: Direct format IDs (most aggressive)
+        lambda best_video, best_audio: f"{best_video['format_id']}+{best_audio['format_id']}",
         
-        # Strategy 2: Height-based selection
-        'bestvideo[height=1080]+bestaudio/bestvideo[height=720]+bestaudio/best[height<=1080]',
+        # Strategy 2: Force specific format with height
+        lambda best_video, best_audio: f"bestvideo[format_id={best_video['format_id']}]+bestaudio[format_id={best_audio['format_id']}]",
         
-        # Strategy 3: Less restrictive
-        'best[height<=1080]/best',
+        # Strategy 3: Height-based with specific codec
+        lambda best_video, best_audio: f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
         
-        # Strategy 4: Generic fallback
-        'best'
+        # Strategy 4: Less restrictive height-based
+        lambda best_video, best_audio: f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4]+bestaudio[ext=m4a]",
+        
+        # Strategy 5: Generic fallback
+        lambda best_video, best_audio: 'bestvideo+bestaudio/best'
     ]
     
-    for i, strategy in enumerate(strategies, 1):
-        logger.info(f"Attempting download strategy {i}: {strategy}")
+    # Get best formats first
+    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if info is None:
+            raise Exception("Failed to extract video information")
         
+        formats = info.get('formats', [])
+        best_video = None
+        best_audio = None
+        
+        for fmt in formats:
+            height = fmt.get('height', 0)
+            vcodec = fmt.get('vcodec', 'none')
+            acodec = fmt.get('acodec', 'none')
+            
+            # Find best video format
+            if vcodec != 'none' and acodec == 'none' and height > 0:
+                if best_video is None or height > best_video.get('height', 0):
+                    best_video = fmt
+            
+            # Find best audio format
+            if acodec != 'none' and vcodec == 'none':
+                if best_audio is None:
+                    best_audio = fmt
+        
+        if not best_video or not best_audio:
+            raise Exception("Could not find suitable video or audio formats")
+    
+    # Try each strategy
+    for i, strategy in enumerate(strategies, 1):
         try:
+            format_string = strategy(best_video, best_audio)
+            logger.info(f"Attempting download strategy {i}: {format_string}")
+            
             ydl_opts_copy = ydl_opts.copy()
-            ydl_opts_copy['format'] = strategy
+            ydl_opts_copy.update({
+                'format': format_string,
+                'format_sort': [
+                    f'res:{best_video.get("height", 1080)}',
+                    'fps:30',
+                    'vcodec:h264',
+                    'acodec:aac',
+                    'ext:mp4',
+                    'size',
+                    'br'
+                ],
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web', 'mweb'],
+                        'player_skip': [],  # Don't skip any player components
+                    }
+                },
+                'concurrent_fragment_downloads': 1,
+                'retries': 20,  # More retries
+                'fragment_retries': 20,
+                'retry_sleep': 10,
+                'socket_timeout': 60,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-us,en;q=0.5',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+            })
             
             with yt_dlp.YoutubeDL(ydl_opts_copy) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info:
-                    logger.info(f"Strategy {i} successful!")
-                    return info
+                    # Verify the downloaded file quality
+                    files_in_dir = os.listdir(DOWNLOADS_DIR)
+                    for fname in files_in_dir:
+                        if fname.startswith(download_id):
+                            fpath = os.path.join(DOWNLOADS_DIR, fname)
+                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                                quality_ok, quality_msg = verify_video_quality(fpath)
+                                if quality_ok:
+                                    logger.info(f"Strategy {i} successful with good quality!")
+                                    return info
+                                else:
+                                    logger.warning(f"Strategy {i} downloaded but quality check failed: {quality_msg}")
+                                    # Delete the low quality file and try next strategy
+                                    try:
+                                        os.remove(fpath)
+                                    except Exception as e:
+                                        logger.warning(f"Failed to remove low quality file: {e}")
                     
         except Exception as e:
             logger.warning(f"Strategy {i} failed: {str(e)}")
             continue
     
-    raise Exception("All download strategies failed")
+    raise Exception("All download strategies failed to get high quality version")
 
 @app.post("/download")
 async def download_video(
@@ -340,8 +419,8 @@ async def download_video(
             'restrictfilenames': True,
             'merge_output_format': 'mp4',
             'concurrent_fragment_downloads': 1,
-            'retries': 15,
-            'fragment_retries': 15,
+            'retries': 20,
+            'fragment_retries': 20,
             'geo_bypass': True,
             'nocheckcertificate': True,
             'verbose': False,
@@ -356,7 +435,10 @@ async def download_video(
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate'
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1'
             },
             'socket_timeout': 60,
             'extractor_retries': 5,
@@ -392,84 +474,6 @@ async def download_video(
         if is_clip or is_shorts:
             logger.info("Detected YouTube clip/shorts URL, applying specific settings")
             
-            # Analyze available formats more carefully
-            logger.info("Analyzing available formats...")
-            try:
-                with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-                    info = ydl.extract_info(request.url, download=False)
-                    if info is None:
-                        raise Exception("Failed to extract video information")
-                    
-                    formats = info.get('formats', [])
-                    
-                    # Find the best video-only and audio-only formats
-                    best_video = None
-                    best_audio = None
-                    best_combined = None
-                    
-                    for fmt in formats:
-                        height = fmt.get('height', 0)
-                        vcodec = fmt.get('vcodec', 'none')
-                        acodec = fmt.get('acodec', 'none')
-                        ext = fmt.get('ext', '')
-                        
-                        # Log all available formats for debugging
-                        logger.info(f"Available format: {fmt.get('format_id')} - {height}p - vcodec: {vcodec} - acodec: {acodec} - ext: {ext}")
-                        
-                        # Find best video-only format
-                        if vcodec != 'none' and acodec == 'none' and height > 0:
-                            if best_video is None or height > best_video.get('height', 0):
-                                best_video = fmt
-                        
-                        # Find best audio-only format
-                        if acodec != 'none' and vcodec == 'none':
-                            if best_audio is None:
-                                best_audio = fmt
-                        
-                        # Find best combined format as fallback
-                        if vcodec != 'none' and acodec != 'none' and height > 0:
-                            if best_combined is None or height > best_combined.get('height', 0):
-                                best_combined = fmt
-                    
-                    # Construct format string based on what's available
-                    if best_video and best_audio:
-                        # Separate video + audio (usually highest quality)
-                        format_string = f"{best_video['format_id']}+{best_audio['format_id']}"
-                        logger.info(f"Using separate video+audio: {format_string} ({best_video.get('height')}p)")
-                    elif best_combined:
-                        # Combined format fallback
-                        format_string = f"{best_combined['format_id']}"
-                        logger.info(f"Using combined format: {format_string} ({best_combined.get('height')}p)")
-                    else:
-                        # Generic fallback
-                        format_string = 'bestvideo+bestaudio/best'
-                        logger.info("Using generic best format")
-            
-            except Exception as e:
-                logger.error(f"Error analyzing formats: {str(e)}")
-                format_string = 'bestvideo+bestaudio/best'
-                logger.info("Using fallback format due to analysis error")
-            
-            # Update ydl_opts with less restrictive settings
-            ydl_opts.update({
-                'format': format_string,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['android', 'web', 'mweb'],
-                    }
-                },
-                'format_sort': [
-                    'res:1080',
-                    'fps:30',
-                    'vcodec:h264',
-                    'acodec:aac',
-                    'ext:mp4',
-                    'size',
-                    'br'
-                ],
-                'retry_sleep': 10,
-            })
-
             # Try multiple format strategies
             try:
                 info = try_multiple_format_strategies(request.url, download_id, output_template, ydl_opts)
