@@ -278,9 +278,39 @@ def verify_video_quality(file_path):
 
 def download_with_custom_method(url, download_id, output_template, ydl_opts):
     """Custom download method that directly accesses video streams"""
+    video_path = None
+    audio_path = None
+    final_path = None
+    
     try:
-        # First get video info
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+        # First get video info with specific options
+        info_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'force_generic_extractor': False,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],
+                    'player_skip': [],
+                    'player_params': {
+                        'hl': 'en',
+                        'gl': 'US',
+                        'enablejsapi': '1',
+                        'origin': 'https://www.youtube.com'
+                    }
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Origin': 'https://www.youtube.com',
+                'Referer': 'https://www.youtube.com/'
+            }
+        }
+        
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if info is None:
                 raise Exception("Failed to extract video information")
@@ -295,9 +325,10 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
                 height = fmt.get('height', 0)
                 vcodec = fmt.get('vcodec', 'none')
                 acodec = fmt.get('acodec', 'none')
+                format_id = fmt.get('format_id', '')
                 
                 # Log format details
-                logger.info(f"Available format: {fmt.get('format_id')} - {height}p - vcodec: {vcodec} - acodec: {acodec}")
+                logger.info(f"Available format: {format_id} - {height}p - vcodec: {vcodec} - acodec: {acodec}")
                 
                 # Find best video format
                 if vcodec != 'none' and acodec == 'none' and height > 0:
@@ -312,28 +343,55 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             if not best_video or not best_audio:
                 raise Exception("Could not find suitable video or audio formats")
             
-            # Download video and audio separately
+            # Get direct URLs
             video_url = best_video.get('url')
             audio_url = best_audio.get('url')
             
             if not video_url or not audio_url:
+                # Try to get URLs using format IDs
+                logger.info("Direct URLs not available, trying to get URLs using format IDs...")
+                format_opts = info_opts.copy()
+                format_opts['format'] = f"{best_video['format_id']}+{best_audio['format_id']}"
+                
+                with yt_dlp.YoutubeDL(format_opts) as ydl:
+                    format_info = ydl.extract_info(url, download=False)
+                    if format_info:
+                        formats = format_info.get('formats', [])
+                        for fmt in formats:
+                            if fmt.get('format_id') == best_video['format_id']:
+                                video_url = fmt.get('url')
+                            elif fmt.get('format_id') == best_audio['format_id']:
+                                audio_url = fmt.get('url')
+            
+            if not video_url or not audio_url:
                 raise Exception("Could not get video or audio URLs")
             
-            # Download video
+            # Set up file paths
             video_path = f"{output_template}_video.mp4"
             audio_path = f"{output_template}_audio.m4a"
             final_path = f"{output_template}.mp4"
             
+            # Download video
             logger.info(f"Downloading video stream: {best_video.get('format_id')} ({best_video.get('height')}p)")
-            with requests.get(video_url, stream=True) as r:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Origin': 'https://www.youtube.com',
+                'Referer': 'https://www.youtube.com/',
+                'Range': 'bytes=0-'
+            }
+            
+            with requests.get(video_url, stream=True, headers=headers) as r:
                 r.raise_for_status()
                 with open(video_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
             
+            # Download audio
             logger.info(f"Downloading audio stream: {best_audio.get('format_id')}")
-            with requests.get(audio_url, stream=True) as r:
+            with requests.get(audio_url, stream=True, headers=headers) as r:
                 r.raise_for_status()
                 with open(audio_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -350,10 +408,14 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
                 '-c:a', 'aac',
                 '-strict', 'experimental',
                 '-movflags', 'faststart',
+                '-y',  # Overwrite output file if it exists
                 final_path
             ]
             
-            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                logger.error(f"FFmpeg error: {result.stderr}")
+                raise Exception("FFmpeg failed to merge streams")
             
             # Clean up temporary files
             try:
@@ -380,7 +442,7 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
         # Clean up any partial files
         for path in [video_path, audio_path, final_path]:
             try:
-                if os.path.exists(path):
+                if path and os.path.exists(path):
                     os.remove(path)
             except Exception as cleanup_error:
                 logger.warning(f"Failed to clean up {path}: {cleanup_error}")
