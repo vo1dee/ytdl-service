@@ -321,43 +321,42 @@ async def download_video(
             # Initialize format_string with a default value
             format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
             
-            # For shorts, we'll analyze available formats first
-            if is_shorts:
-                logger.info("Analyzing available formats for Shorts...")
-                try:
-                    # First get video info to analyze formats
-                    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-                        info = ydl.extract_info(request.url, download=False)
-                        if info is None:
-                            raise Exception("Failed to extract video information")
-                        
-                        formats = info.get('formats', [])
-                        best_format = None
-                        best_height = 0
-                        
-                        # Find the best format with highest resolution
-                        for fmt in formats:
-                            height = fmt.get('height', 0)
-                            if height and height > best_height and fmt.get('ext') == 'mp4':
-                                best_format = fmt
-                                best_height = height
-                                logger.info(f"Found format: {height}p, format_id: {fmt.get('format_id')}, note: {fmt.get('format_note', '')}")
-                        
-                        if best_format:
-                            logger.info(f"Selected best format: {best_height}p")
-                            # Use a more reliable format string that includes fallbacks
-                            format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
-                        else:
-                            # Fallback to high quality format if specific format not found
-                            format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                            logger.info("No specific format found, using fallback format")
-                        
-                        logger.info(f"Using format string for Shorts: {format_string}")
-                except Exception as e:
-                    logger.error(f"Error analyzing formats: {str(e)}")
-                    # Fallback to high quality format with more specific options
-                    format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                    logger.info(f"Using fallback format string: {format_string}")
+            # For both shorts and clips, analyze available formats
+            logger.info("Analyzing available formats...")
+            try:
+                # First get video info to analyze formats
+                with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                    info = ydl.extract_info(request.url, download=False)
+                    if info is None:
+                        raise Exception("Failed to extract video information")
+                    
+                    formats = info.get('formats', [])
+                    best_format = None
+                    best_height = 0
+                    
+                    # Find the best format with highest resolution
+                    for fmt in formats:
+                        height = fmt.get('height', 0)
+                        if height and height > best_height and fmt.get('ext') == 'mp4':
+                            best_format = fmt
+                            best_height = height
+                            logger.info(f"Found format: {height}p, format_id: {fmt.get('format_id')}, note: {fmt.get('format_note', '')}")
+                    
+                    if best_format:
+                        logger.info(f"Selected best format: {best_height}p")
+                        # Use a more reliable format string that includes fallbacks
+                        format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
+                    else:
+                        # Fallback to high quality format if specific format not found
+                        format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                        logger.info("No specific format found, using fallback format")
+                    
+                    logger.info(f"Using format string: {format_string}")
+            except Exception as e:
+                logger.error(f"Error analyzing formats: {str(e)}")
+                # Fallback to high quality format with more specific options
+                format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                logger.info(f"Using fallback format string: {format_string}")
             
             # Update ydl_opts for clips/shorts
             ydl_opts.update({
