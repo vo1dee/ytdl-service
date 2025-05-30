@@ -239,6 +239,78 @@ async def health_check():
             "timestamp": datetime.now().isoformat()
         }
 
+def verify_video_quality(file_path):
+    """Verify the downloaded video meets quality expectations"""
+    try:
+        ffprobe_cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,codec_name,bit_rate',
+            '-of', 'json',
+            file_path
+        ]
+        result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            streams = data.get('streams', [])
+            if streams:
+                video_stream = streams[0]
+                width = video_stream.get('width')
+                height = video_stream.get('height')
+                codec = video_stream.get('codec_name')
+                
+                logger.info(f"Downloaded video: {width}x{height}, codec: {codec}")
+                
+                # Check if resolution is acceptable
+                if height and height >= 720:  # At least 720p
+                    return True, f"Good quality: {width}x{height}"
+                else:
+                    return False, f"Low quality: {width}x{height}"
+            
+    except Exception as e:
+        logger.error(f"Error verifying video quality: {e}")
+    
+    return False, "Could not verify quality"
+
+def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
+    """Try different format selection strategies until one works"""
+    
+    strategies = [
+        # Strategy 1: Best video + best audio
+        'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio',
+        
+        # Strategy 2: Height-based selection
+        'bestvideo[height=1080]+bestaudio/bestvideo[height=720]+bestaudio/best[height<=1080]',
+        
+        # Strategy 3: Less restrictive
+        'best[height<=1080]/best',
+        
+        # Strategy 4: Generic fallback
+        'best'
+    ]
+    
+    for i, strategy in enumerate(strategies, 1):
+        logger.info(f"Attempting download strategy {i}: {strategy}")
+        
+        try:
+            ydl_opts_copy = ydl_opts.copy()
+            ydl_opts_copy['format'] = strategy
+            
+            with yt_dlp.YoutubeDL(ydl_opts_copy) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    logger.info(f"Strategy {i} successful!")
+                    return info
+                    
+        except Exception as e:
+            logger.warning(f"Strategy {i} failed: {str(e)}")
+            continue
+    
+    raise Exception("All download strategies failed")
+
 @app.post("/download")
 async def download_video(
     request: DownloadRequest,
@@ -249,7 +321,7 @@ async def download_video(
     output_template = f'{output_template_base}.%(ext)s'
     download_info = {}
 
-    # Clean up any existing files with this ID (shouldn't happen, but just in case)
+    # Clean up any existing files with this ID
     for item in os.listdir(DOWNLOADS_DIR):
         if item.startswith(download_id):
             item_path = os.path.join(DOWNLOADS_DIR, item)
@@ -262,20 +334,19 @@ async def download_video(
     try:
         logger.info(f"Starting download for URL: {request.url}")
         
-        # Initialize ydl_opts with default settings first
+        # Initialize ydl_opts with default settings
         ydl_opts = {
-            'format': request.format,
             'outtmpl': output_template,
             'restrictfilenames': True,
             'merge_output_format': 'mp4',
-            'concurrent_fragment_downloads': 3,
-            'retries': 10,
-            'fragment_retries': 10,
+            'concurrent_fragment_downloads': 1,
+            'retries': 15,
+            'fragment_retries': 15,
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'verbose': True,
-            'quiet': False,
-            'no_warnings': False,
+            'verbose': False,
+            'quiet': True,
+            'no_warnings': True,
             'progress_hooks': [
                 lambda d: logger.info(
                     f"yt-dlp progress: {d.get('_percent_str', 'N/A')} {d.get('_eta_str', 'N/A')}"
@@ -283,8 +354,11 @@ async def download_video(
             ],
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate'
             },
-            'socket_timeout': 30,
+            'socket_timeout': 60,
             'extractor_retries': 5,
             'ignoreerrors': True,
             'no_color': True,
@@ -293,15 +367,15 @@ async def download_video(
             'prefer_ffmpeg': True,
             'postprocessor_args': {
                 'ffmpeg': [
-                    '-movflags', 'faststart',  # Enable fast start for web playback
-                    '-c:v', 'libx264',  # Use H.264 codec for maximum compatibility
-                    '-preset', 'medium',  # Balance between quality and encoding speed
-                    '-crf', '18',  # High quality (lower CRF = better quality)
-                    '-profile:v', 'high',  # Use high profile for better quality
-                    '-level', '4.1',  # Compatibility level for most devices
-                    '-c:a', 'aac',  # Use AAC audio codec for maximum compatibility
-                    '-b:a', '192k',  # High quality audio
-                    '-ar', '48000',  # Standard audio sample rate
+                    '-movflags', 'faststart',
+                    '-c:v', 'libx264',
+                    '-preset', 'medium',
+                    '-crf', '18',
+                    '-profile:v', 'high',
+                    '-level', '4.1',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-ar', '48000',
                     '-strict', 'experimental'
                 ]
             },
@@ -310,7 +384,7 @@ async def download_video(
                 'preferedformat': 'mp4',
             }]
         }
-        
+
         # Check if it's a YouTube clip
         is_clip = 'youtube.com/clip' in request.url or 'youtu.be/clip' in request.url
         is_shorts = 'youtube.com/shorts' in request.url or 'youtu.be/shorts' in request.url
@@ -318,260 +392,128 @@ async def download_video(
         if is_clip or is_shorts:
             logger.info("Detected YouTube clip/shorts URL, applying specific settings")
             
-            # Initialize format_string with a default value
-            format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-            
-            # For both shorts and clips, analyze available formats
+            # Analyze available formats more carefully
             logger.info("Analyzing available formats...")
             try:
-                # First get video info to analyze formats
                 with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
                     info = ydl.extract_info(request.url, download=False)
                     if info is None:
                         raise Exception("Failed to extract video information")
                     
                     formats = info.get('formats', [])
-                    best_format = None
-                    best_height = 0
                     
-                    # Find the best format with highest resolution
+                    # Find the best video-only and audio-only formats
+                    best_video = None
+                    best_audio = None
+                    best_combined = None
+                    
                     for fmt in formats:
                         height = fmt.get('height', 0)
-                        if height and height > best_height and fmt.get('ext') == 'mp4':
-                            best_format = fmt
-                            best_height = height
-                            logger.info(f"Found format: {height}p, format_id: {fmt.get('format_id')}, note: {fmt.get('format_note', '')}")
+                        vcodec = fmt.get('vcodec', 'none')
+                        acodec = fmt.get('acodec', 'none')
+                        ext = fmt.get('ext', '')
+                        
+                        # Log all available formats for debugging
+                        logger.info(f"Available format: {fmt.get('format_id')} - {height}p - vcodec: {vcodec} - acodec: {acodec} - ext: {ext}")
+                        
+                        # Find best video-only format
+                        if vcodec != 'none' and acodec == 'none' and height > 0:
+                            if best_video is None or height > best_video.get('height', 0):
+                                best_video = fmt
+                        
+                        # Find best audio-only format
+                        if acodec != 'none' and vcodec == 'none':
+                            if best_audio is None:
+                                best_audio = fmt
+                        
+                        # Find best combined format as fallback
+                        if vcodec != 'none' and acodec != 'none' and height > 0:
+                            if best_combined is None or height > best_combined.get('height', 0):
+                                best_combined = fmt
                     
-                    if best_format:
-                        logger.info(f"Selected best format: {best_height}p")
-                        # For clips, use a more aggressive format selection
-                        if is_clip:
-                            format_id = best_format.get('format_id')
-                            if format_id:
-                                # Try to force the exact format first
-                                format_string = f"{format_id}+bestaudio[ext=m4a]/bestvideo[format_id={format_id}]+bestaudio[ext=m4a]/best[format_id={format_id}]"
-                                logger.info(f"Using direct format_id first: {format_id}")
-                            else:
-                                # Fallback to height-based selection
-                                format_string = f"bestvideo[height={best_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/best[height={best_height}][ext=mp4]/best"
-                                logger.info(f"Using height-based format selection: {format_string}")
-
-                            # Add specific YouTube extractor options for clips
-                            ydl_opts.update({
-                                'extractor_args': {
-                                    'youtube': {
-                                        'skip': ['dash', 'hls'],
-                                        'player_client': ['android', 'web'],
-                                        'player_skip': ['js', 'configs', 'webpage'],
-                                        'player_params': {
-                                            'hl': 'en',
-                                            'gl': 'US',
-                                        },
-                                    }
-                                },
-                                'format_sort': [f'res:{best_height}', 'ext:mp4:m4a', 'size', 'br', 'asr'],
-                                'format_selection': 'best',
-                                'format_selection_whitelist': ['mp4'],
-                                'format_selection_blacklist': ['dash', 'hls'],
-                                'prefer_insecure': True,  # Try to bypass some restrictions
-                                'geo_bypass': True,
-                                'geo_bypass_country': 'US',
-                            })
-                        else:
-                            # Use a more reliable format string that includes fallbacks
-                            format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
+                    # Construct format string based on what's available
+                    if best_video and best_audio:
+                        # Separate video + audio (usually highest quality)
+                        format_string = f"{best_video['format_id']}+{best_audio['format_id']}"
+                        logger.info(f"Using separate video+audio: {format_string} ({best_video.get('height')}p)")
+                    elif best_combined:
+                        # Combined format fallback
+                        format_string = f"{best_combined['format_id']}"
+                        logger.info(f"Using combined format: {format_string} ({best_combined.get('height')}p)")
                     else:
-                        # Fallback to high quality format if specific format not found
-                        format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                        logger.info("No specific format found, using fallback format")
-                    
-                    logger.info(f"Using format string: {format_string}")
+                        # Generic fallback
+                        format_string = 'bestvideo+bestaudio/best'
+                        logger.info("Using generic best format")
+            
             except Exception as e:
                 logger.error(f"Error analyzing formats: {str(e)}")
-                # Fallback to high quality format with more specific options
-                format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                logger.info(f"Using fallback format string: {format_string}")
+                format_string = 'bestvideo+bestaudio/best'
+                logger.info("Using fallback format due to analysis error")
             
-            # Update ydl_opts for clips/shorts
+            # Update ydl_opts with less restrictive settings
             ydl_opts.update({
                 'format': format_string,
-                'extract_flat': False,
-                'force_generic_extractor': False,
                 'extractor_args': {
                     'youtube': {
-                        'skip': ['dash', 'hls'],
-                        'player_client': ['android', 'web'],
-                        'player_skip': ['js', 'configs', 'webpage'],
+                        'player_client': ['android', 'web', 'mweb'],
                     }
                 },
-                'concurrent_fragment_downloads': 1,  # Reduce concurrent downloads for clips
-                'socket_timeout': 30,  # Increased timeout
-                'retries': 10,  # More retries
-                'fragment_retries': 10,  # More fragment retries
-                'retry_sleep': 5,  # Wait between retries
-                'ignoreerrors': True,  # Continue on errors
-                'no_warnings': True,  # Reduce noise
-                'quiet': True,  # Reduce noise
-                'verbose': False,  # Reduce noise
+                'format_sort': [
+                    'res:1080',
+                    'fps:30',
+                    'vcodec:h264',
+                    'acodec:aac',
+                    'ext:mp4',
+                    'size',
+                    'br'
+                ],
+                'retry_sleep': 10,
             })
 
-            # Try to get video info first with minimal options
+            # Try multiple format strategies
             try:
-                logger.info("Attempting to extract video info first...")
-                with yt_dlp.YoutubeDL({
-                    'quiet': True,
-                    'no_warnings': True,
-                    'format': 'best',  # Use simplest format for info extraction
-                    'extract_flat': True,
-                    'force_generic_extractor': True,
-                }) as ydl:
-                    info = ydl.extract_info(request.url, download=False)
-                    if info is None:
-                        raise Exception("Failed to extract video information")
-                    
-                    logger.info(f"Successfully extracted video info: {info.get('title', 'Unknown Title')}")
-            except Exception as info_error:
-                logger.error(f"Error extracting video info: {str(info_error)}")
-                logger.info("Attempting alternative clip extraction method...")
-                try:
-                    # Try with absolute minimal options
-                    with yt_dlp.YoutubeDL({
-                        'quiet': True,
-                        'no_warnings': True,
-                        'format': 'best',
-                        'extract_flat': True,
-                        'force_generic_extractor': True,
-                        'ignoreerrors': True,
-                    }) as ydl:
-                        info = ydl.extract_info(request.url, download=False)
-                        if info is None:
-                            raise Exception("Alternative extraction also failed")
-                        logger.info("Alternative extraction successful")
-                except Exception as alt_error:
-                    logger.error(f"Alternative extraction failed: {str(alt_error)}")
-                    # Don't raise here, continue with download attempt
+                info = try_multiple_format_strategies(request.url, download_id, output_template, ydl_opts)
+            except Exception as e:
+                logger.error(f"All format strategies failed: {str(e)}")
+                raise
 
-        # Adjust format based on request parameters
-        if not (is_clip or is_shorts):  # Only apply these if it's not a clip or shorts
+        else:
+            # Normal video download
             if request.audio_only:
                 format_string = 'bestaudio[ext=m4a]/bestaudio/best'
             elif request.max_height and request.max_height > 0:
-                # Apply max height constraint to video format
                 format_string = f'bestvideo[height<={request.max_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
             else:
                 format_string = request.format
             
-            logger.info(f"Using format string: {format_string}")
             ydl_opts['format'] = format_string
-
-        # Add subtitles if requested
-        if request.subtitles:
-            ydl_opts.update({
-                'writesubtitles': True,
-                'writeautomaticsub': True,
-                'subtitleslangs': ['en'],  # Default to English
-                'postprocessors': [{
-                    'key': 'FFmpegEmbedSubtitle',
-                    'already_have_subtitle': False,
-                }],
-            })
-
-        # Configure ffmpeg
-        ffmpeg_available = subprocess.run(
-            ["which", "ffmpeg"],
-            capture_output=True
-        ).returncode == 0
-
-        if ffmpeg_available:
-            logger.info("ffmpeg detected, configuring")
-            # Add ffmpeg options to improve reliability
-            ydl_opts.update({
-                'prefer_ffmpeg': True,
-                'external_downloader_args': {
-                    'ffmpeg': [
-                        '-loglevel', 'warning',
-                        '-reconnect', '1',
-                        '-reconnect_streamed', '1',
-                        '-reconnect_delay_max', '5',
-                        '-strict', 'experimental'
-                    ]
-                }
-            })
-        else:
-            logger.warning("ffmpeg not found. Merging/remuxing may not work correctly.")
-
-        # Download the video and get info
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Starting extraction and download with options: {ydl_opts}")
-            try:
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(request.url, download=True)
-                if info is None:
-                    raise Exception("Failed to extract video information")
-                
-                # Store needed info
-                download_info = {
-                    'title': info.get('title', 'Video'),
-                    'description': info.get('description', ''),
-                    'tags': info.get('tags', []),
-                    'duration': info.get('duration'),
-                    'uploader': info.get('uploader'),
-                    'expected_filepath': ydl.prepare_filename(info)
-                }
-                
-                logger.info(f"Download completed. Expected filepath: {download_info['expected_filepath']}")
-            except Exception as download_error:
-                logger.error(f"Error during download: {str(download_error)}")
-                if is_clip:
-                    logger.info("Attempting fallback download method for clip...")
-                    try:
-                        # Try with absolute minimal options
-                        fallback_opts = {
-                            'format': 'best',
-                            'outtmpl': output_template,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'extract_flat': True,
-                            'force_generic_extractor': True,
-                        }
-                        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                            info = ydl.extract_info(request.url, download=True)
-                            if info is None:
-                                raise Exception("Fallback download failed to extract info")
-                            logger.info("Fallback download successful")
-                    except Exception as fallback_error:
-                        logger.error(f"Fallback download failed: {str(fallback_error)}")
-                        raise Exception(f"Download failed: {str(download_error)}. Fallback also failed: {str(fallback_error)}")
-                else:
-                    raise
 
         # Give the filesystem a moment to finalize writes
-        time.sleep(5)  # Increased wait time for live stream clips
+        time.sleep(5)
 
         # Find the downloaded file
         files_in_dir = os.listdir(DOWNLOADS_DIR)
         logger.info(f"Files in directory after download: {files_in_dir}")
         
-        # Initialize downloaded_file variable
         downloaded_file = None
         
         # First, look for files with our download_id
         potential_files = [f for f in files_in_dir if f.startswith(f"{download_id}.")]
         
         if potential_files:
-            # Check for both complete and partial files
             for fname in potential_files:
                 fpath = os.path.join(DOWNLOADS_DIR, fname)
                 if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                    # If it's a partial file, wait a bit longer for it to complete
                     if fname.endswith('.part'):
                         logger.info(f"Found partial file {fname}, waiting for completion...")
-                        time.sleep(10)  # Increased wait time for clips
+                        time.sleep(10)
                         if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
-                            # Check if the file is still being written to
                             initial_size = os.path.getsize(fpath)
-                            time.sleep(5)  # Increased wait time for clips
+                            time.sleep(5)
                             if os.path.getsize(fpath) == initial_size:
-                                # File size hasn't changed, assume it's complete
                                 downloaded_file = fpath
                                 logger.info(f"Partial file appears to be complete: {fname}")
                                 break
@@ -579,10 +521,9 @@ async def download_video(
                         downloaded_file = fpath
                         logger.info(f"Found complete file: {fname}")
                         break
-        
+
         if not downloaded_file:
             logger.info("No file found with exact ID match, searching for recently modified files...")
-            # Get all files and their modification times
             file_times = []
             for fname in files_in_dir:
                 fpath = os.path.join(DOWNLOADS_DIR, fname)
@@ -593,103 +534,53 @@ async def download_video(
                     except Exception as e:
                         logger.warning(f"Error getting mtime for {fname}: {e}")
             
-            # Sort by modification time, newest first
             file_times.sort(key=lambda x: x[1], reverse=True)
-            
-            # Look at the most recently modified files
-            recent_files = [(f[0], f[2]) for f in file_times[:5]]  # Check last 5 modified files
+            recent_files = [(f[0], f[2]) for f in file_times[:5]]
             logger.info(f"Most recently modified files: {[f[0] for f in recent_files]}")
             
-            # Try to find a valid video file
             for fpath, fname in recent_files:
-                if os.path.getsize(fpath) > 0:  # Ensure file has content
-                    # Handle both complete and partial files
+                if os.path.getsize(fpath) > 0:
                     if fname.endswith('.part'):
                         logger.info(f"Found partial file {fname}, waiting for completion...")
-                        time.sleep(5)  # Wait for potential completion
+                        time.sleep(5)
                         if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
-                            # Check if the file is still being written to
                             initial_size = os.path.getsize(fpath)
                             time.sleep(2)
                             if os.path.getsize(fpath) == initial_size:
-                                # File size hasn't changed, assume it's complete
                                 downloaded_file = fpath
                                 logger.info(f"Partial file appears to be complete: {fname}")
                                 break
                     else:
                         ext = os.path.splitext(fpath)[1].lower()
-                        if ext in ['.mp4', '.webm', '.mkv']:  # Common video extensions
+                        if ext in ['.mp4', '.webm', '.mkv']:
                             downloaded_file = fpath
                             logger.info(f"Found recently downloaded file: {fname}")
                             break
-        
-        if not downloaded_file:
-            # If still no file found, try to find any video file that was modified in the last minute
-            current_time = time.time()
-            for fname in files_in_dir:
-                fpath = os.path.join(DOWNLOADS_DIR, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        mtime = os.path.getmtime(fpath)
-                        if current_time - mtime < 60:  # Modified in last minute
-                            if fname.endswith('.part'):
-                                logger.info(f"Found recent partial file {fname}, waiting for completion...")
-                                time.sleep(5)  # Wait for potential completion
-                                if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
-                                    # Check if the file is still being written to
-                                    initial_size = os.path.getsize(fpath)
-                                    time.sleep(2)
-                                    if os.path.getsize(fpath) == initial_size:
-                                        # File size hasn't changed, assume it's complete
-                                        downloaded_file = fpath
-                                        logger.info(f"Partial file appears to be complete: {fname}")
-                                        break
-                            else:
-                                ext = os.path.splitext(fpath)[1].lower()
-                                if ext in ['.mp4', '.webm', '.mkv'] and os.path.getsize(fpath) > 0:
-                                    downloaded_file = fpath
-                                    logger.info(f"Found recently modified video file: {fname}")
-                                    break
-                    except Exception as e:
-                        logger.warning(f"Error checking file {fname}: {e}")
-        
+
         if not downloaded_file:
             logger.error(f"No suitable downloaded file found in {DOWNLOADS_DIR}")
             raise Exception("Downloaded file not found or named as expected.")
-        
+
         # Verify the file exists and has content
         if downloaded_file and os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
             # If it's a .part file, rename it to remove the .part extension
             if downloaded_file.endswith('.part'):
-                new_path = downloaded_file[:-5]  # Remove .part extension
+                new_path = downloaded_file[:-5]
                 try:
                     os.rename(downloaded_file, new_path)
                     downloaded_file = new_path
                     logger.info(f"Renamed partial file to: {os.path.basename(new_path)}")
                 except Exception as e:
                     logger.warning(f"Failed to rename partial file: {e}")
-            
-            # Verify the file is a valid video file
-            try:
-                # Use ffprobe to check the file
-                ffprobe_cmd = [
-                    'ffprobe',
-                    '-v', 'error',
-                    '-select_streams', 'v:0',
-                    '-show_entries', 'stream=width,height,codec_name',
-                    '-of', 'json',
-                    downloaded_file
-                ]
-                result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    logger.info(f"Video file verification successful: {result.stdout}")
-                else:
-                    logger.warning(f"Video file verification failed: {result.stderr}")
-            except Exception as e:
-                logger.warning(f"Error verifying video file: {e}")
-            
-            logger.info(f"Download successful: {downloaded_file}")
-            
+
+            # Verify video quality
+            quality_ok, quality_msg = verify_video_quality(downloaded_file)
+            logger.info(f"Quality check: {quality_msg}")
+
+            if not quality_ok and (is_clip or is_shorts):
+                logger.warning("Downloaded quality is lower than expected, trying alternative method...")
+                # Could implement retry logic here if needed
+
             # Clean up other temporary files
             for item in os.listdir(DOWNLOADS_DIR):
                 if item.startswith(download_id) and os.path.join(DOWNLOADS_DIR, item) != downloaded_file:
@@ -700,19 +591,20 @@ async def download_video(
                             logger.info(f"Cleaned up artifact file: {item}")
                     except Exception as e:
                         logger.warning(f"Failed to clean up item {item}: {e}")
-            
+
             # Return success response
             return {
                 "success": True,
                 "file_path": os.path.basename(downloaded_file),
-                "title": download_info.get('title', 'Video'),
+                "title": info.get('title', 'Video'),
                 "url": request.url,
-                "description": download_info.get('description', ''),
-                "tags": download_info.get('tags', []),
-                "duration": download_info.get('duration'),
-                "uploader": download_info.get('uploader'),
+                "description": info.get('description', ''),
+                "tags": info.get('tags', []),
+                "duration": info.get('duration'),
+                "uploader": info.get('uploader'),
                 "file_size_bytes": os.path.getsize(downloaded_file),
-                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2)
+                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                "quality": quality_msg
             }
         else:
             logger.error(f"Downloaded file verification failed: {downloaded_file}")
@@ -721,20 +613,6 @@ async def download_video(
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
         logger.error(f"YouTube download error: {error_msg}")
-        
-        # Add specific handling for clip errors
-        if is_clip:
-            logger.error("Clip download failed, attempting fallback method...")
-            try:
-                # Try with a simpler format as fallback
-                ydl_opts['format'] = 'best'
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(request.url, download=True)
-                    logger.info("Fallback download successful")
-                    # Continue with normal processing...
-            except Exception as fallback_error:
-                logger.error(f"Fallback download also failed: {str(fallback_error)}")
-                error_msg = f"Clip download failed: {error_msg}. Fallback also failed: {str(fallback_error)}"
         
         # Cleanup any partial files
         cleanup_files(download_id)
