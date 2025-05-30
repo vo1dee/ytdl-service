@@ -344,9 +344,18 @@ async def download_video(
                     
                     if best_format:
                         logger.info(f"Selected best format: {best_height}p")
-                        # For clips, use a more specific format selection
+                        # For clips, use a more aggressive format selection
                         if is_clip:
-                            format_string = f"bestvideo[height={best_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/best[height={best_height}][ext=mp4]/best"
+                            format_id = best_format.get('format_id')
+                            if format_id:
+                                # Try to force the exact format first
+                                format_string = f"{format_id}+bestaudio[ext=m4a]/bestvideo[format_id={format_id}]+bestaudio[ext=m4a]/best[format_id={format_id}]"
+                                logger.info(f"Using direct format_id first: {format_id}")
+                            else:
+                                # Fallback to height-based selection
+                                format_string = f"bestvideo[height={best_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/best[height={best_height}][ext=mp4]/best"
+                                logger.info(f"Using height-based format selection: {format_string}")
+
                             # Add specific YouTube extractor options for clips
                             ydl_opts.update({
                                 'extractor_args': {
@@ -364,8 +373,10 @@ async def download_video(
                                 'format_selection': 'best',
                                 'format_selection_whitelist': ['mp4'],
                                 'format_selection_blacklist': ['dash', 'hls'],
+                                'prefer_insecure': True,  # Try to bypass some restrictions
+                                'geo_bypass': True,
+                                'geo_bypass_country': 'US',
                             })
-                            logger.info(f"Using enhanced format selection for clip: {format_string}")
                         else:
                             # Use a more reliable format string that includes fallbacks
                             format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
