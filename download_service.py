@@ -317,15 +317,45 @@ async def download_video(
         
         if is_clip or is_shorts:
             logger.info("Detected YouTube clip/shorts URL, applying specific settings")
-            # For shorts, we'll use a more specific format to ensure we get the highest quality
+            
+            # For shorts, we'll analyze available formats first
             if is_shorts:
-                format_string = 'bestvideo[height>=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
-                logger.info("Using format string optimized for Shorts")
+                logger.info("Analyzing available formats for Shorts...")
+                try:
+                    # First get video info to analyze formats
+                    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                        info = ydl.extract_info(request.url, download=False)
+                        if info is None:
+                            raise Exception("Failed to extract video information")
+                        
+                        formats = info.get('formats', [])
+                        best_format = None
+                        best_height = 0
+                        
+                        # Find the best format with highest resolution
+                        for fmt in formats:
+                            height = fmt.get('height', 0)
+                            if height > best_height and fmt.get('ext') == 'mp4':
+                                best_format = fmt
+                                best_height = height
+                        
+                        if best_format:
+                            logger.info(f"Found best format: {best_height}p")
+                            # Use the specific format ID to ensure we get exactly this quality
+                            format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
+                        else:
+                            # Fallback to high quality format if specific format not found
+                            format_string = 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                        
+                        logger.info(f"Using format string for Shorts: {format_string}")
+                except Exception as e:
+                    logger.error(f"Error analyzing formats: {str(e)}")
+                    # Fallback to high quality format
+                    format_string = 'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
+                    logger.info(f"Using fallback format string: {format_string}")
             else:
                 format_string = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
                 logger.info("Using format string for regular clips")
-            
-            logger.info(f"Using format string: {format_string}")
             
             # Update ydl_opts for clips/shorts
             ydl_opts.update({
@@ -350,6 +380,18 @@ async def download_video(
                     if info is None:
                         raise Exception("Failed to extract video information")
                     
+                    # For shorts, verify we got the right quality
+                    if is_shorts:
+                        formats = info.get('formats', [])
+                        selected_format = None
+                        for fmt in formats:
+                            if fmt.get('format_id') == format_string.split('=')[1].split(']')[0]:
+                                selected_format = fmt
+                                break
+                        
+                        if selected_format:
+                            logger.info(f"Selected format details: {selected_format.get('height')}p, {selected_format.get('ext')}, {selected_format.get('format_note', '')}")
+                    
                     # Check if it's from a live stream
                     is_live_clip = info.get('is_live', False) or 'live' in info.get('webpage_url', '').lower()
                     if is_live_clip:
@@ -364,7 +406,8 @@ async def download_video(
                         'original_video': info.get('webpage_url', ''),
                         'clip_id': info.get('id', ''),
                         'duration': info.get('duration', 0),
-                        'is_live': is_live_clip
+                        'is_live': is_live_clip,
+                        'is_shorts': is_shorts
                     }
                     logger.info(f"Successfully extracted video info: {clip_info['title']}")
             except Exception as info_error:
