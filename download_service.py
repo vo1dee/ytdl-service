@@ -291,30 +291,48 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             'force_generic_extractor': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web', 'mweb', 'tv_embedded'],
+                    'player_client': ['web'],
                     'player_skip': [],
                     'player_params': {
                         'hl': 'en',
                         'gl': 'US',
                         'enablejsapi': '1',
-                        'origin': 'https://www.youtube.com',
-                        'client': 'ANDROID',
-                        'client_version': '17.31.35',
-                        'android_client_version': '17.31.35',
-                        'app': 'com.google.android.youtube'
+                        'origin': 'https://www.youtube.com'
                     }
                 }
             },
             'http_headers': {
-                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
-                'Accept': '*/*',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/',
-                'X-YouTube-Client-Name': '2',
-                'X-YouTube-Client-Version': '17.31.35'
+                'Referer': 'https://www.youtube.com/'
             }
         }
+        
+        # For clips, we need to modify the URL to get the parent video
+        if 'youtube.com/clip' in url or 'youtu.be/clip' in url:
+            logger.info("Converting clip URL to parent video URL...")
+            # Extract the clip ID
+            clip_id = url.split('clip/')[-1].split('?')[0]
+            # Get the parent video info first
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                try:
+                    # Try to get info about the clip
+                    clip_info = ydl.extract_info(url, download=False)
+                    if clip_info and 'webpage_url' in clip_info:
+                        parent_url = clip_info['webpage_url']
+                        logger.info(f"Found parent video URL: {parent_url}")
+                        url = parent_url
+                except Exception as e:
+                    logger.warning(f"Failed to get clip info: {e}")
+                    # If we can't get clip info, try to construct the parent URL
+                    if 'youtube.com/clip' in url:
+                        parent_url = url.replace('/clip/', '/watch?v=')
+                    else:
+                        parent_url = url.replace('/clip/', '/watch?v=')
+                    logger.info(f"Using constructed parent URL: {parent_url}")
+                    url = parent_url
         
         with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -389,7 +407,7 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             # Download video
             logger.info(f"Downloading video stream: {best_video.get('format_id')} ({best_video.get('height')}p)")
             headers = {
-                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                 'Accept': '*/*',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Origin': 'https://www.youtube.com',
