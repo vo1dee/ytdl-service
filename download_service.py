@@ -459,10 +459,36 @@ async def download_video(
         files_in_dir = os.listdir(DOWNLOADS_DIR)
         logger.info(f"Files in directory after download: {files_in_dir}")
         
-        # Look for files with our download_id
+        # Initialize downloaded_file variable
+        downloaded_file = None
+        
+        # First, look for files with our download_id
         potential_files = [f for f in files_in_dir if f.startswith(f"{download_id}.")]
         
-        if not potential_files:
+        if potential_files:
+            # Check for both complete and partial files
+            for fname in potential_files:
+                fpath = os.path.join(DOWNLOADS_DIR, fname)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    # If it's a partial file, wait a bit longer for it to complete
+                    if fname.endswith('.part'):
+                        logger.info(f"Found partial file {fname}, waiting for completion...")
+                        time.sleep(5)  # Wait for potential completion
+                        if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
+                            # Check if the file is still being written to
+                            initial_size = os.path.getsize(fpath)
+                            time.sleep(2)
+                            if os.path.getsize(fpath) == initial_size:
+                                # File size hasn't changed, assume it's complete
+                                downloaded_file = fpath
+                                logger.info(f"Partial file appears to be complete: {fname}")
+                                break
+                    else:
+                        downloaded_file = fpath
+                        logger.info(f"Found complete file: {fname}")
+                        break
+        
+        if not downloaded_file:
             logger.info("No file found with exact ID match, searching for recently modified files...")
             # Get all files and their modification times
             file_times = []
@@ -471,7 +497,7 @@ async def download_video(
                 if os.path.isfile(fpath):
                     try:
                         mtime = os.path.getmtime(fpath)
-                        file_times.append((fpath, mtime))
+                        file_times.append((fpath, mtime, fname))
                     except Exception as e:
                         logger.warning(f"Error getting mtime for {fname}: {e}")
             
@@ -479,17 +505,31 @@ async def download_video(
             file_times.sort(key=lambda x: x[1], reverse=True)
             
             # Look at the most recently modified files
-            recent_files = [f[0] for f in file_times[:5]]  # Check last 5 modified files
-            logger.info(f"Most recently modified files: {recent_files}")
+            recent_files = [(f[0], f[2]) for f in file_times[:5]]  # Check last 5 modified files
+            logger.info(f"Most recently modified files: {[f[0] for f in recent_files]}")
             
             # Try to find a valid video file
-            for fpath in recent_files:
+            for fpath, fname in recent_files:
                 if os.path.getsize(fpath) > 0:  # Ensure file has content
-                    ext = os.path.splitext(fpath)[1].lower()
-                    if ext in ['.mp4', '.webm', '.mkv']:  # Common video extensions
-                        downloaded_file = fpath
-                        logger.info(f"Found recently downloaded file: {downloaded_file}")
-                        break
+                    # Handle both complete and partial files
+                    if fname.endswith('.part'):
+                        logger.info(f"Found partial file {fname}, waiting for completion...")
+                        time.sleep(5)  # Wait for potential completion
+                        if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
+                            # Check if the file is still being written to
+                            initial_size = os.path.getsize(fpath)
+                            time.sleep(2)
+                            if os.path.getsize(fpath) == initial_size:
+                                # File size hasn't changed, assume it's complete
+                                downloaded_file = fpath
+                                logger.info(f"Partial file appears to be complete: {fname}")
+                                break
+                    else:
+                        ext = os.path.splitext(fpath)[1].lower()
+                        if ext in ['.mp4', '.webm', '.mkv']:  # Common video extensions
+                            downloaded_file = fpath
+                            logger.info(f"Found recently downloaded file: {fname}")
+                            break
         
         if not downloaded_file:
             # If still no file found, try to find any video file that was modified in the last minute
@@ -500,11 +540,24 @@ async def download_video(
                     try:
                         mtime = os.path.getmtime(fpath)
                         if current_time - mtime < 60:  # Modified in last minute
-                            ext = os.path.splitext(fpath)[1].lower()
-                            if ext in ['.mp4', '.webm', '.mkv'] and os.path.getsize(fpath) > 0:
-                                downloaded_file = fpath
-                                logger.info(f"Found recently modified video file: {downloaded_file}")
-                                break
+                            if fname.endswith('.part'):
+                                logger.info(f"Found recent partial file {fname}, waiting for completion...")
+                                time.sleep(5)  # Wait for potential completion
+                                if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
+                                    # Check if the file is still being written to
+                                    initial_size = os.path.getsize(fpath)
+                                    time.sleep(2)
+                                    if os.path.getsize(fpath) == initial_size:
+                                        # File size hasn't changed, assume it's complete
+                                        downloaded_file = fpath
+                                        logger.info(f"Partial file appears to be complete: {fname}")
+                                        break
+                            else:
+                                ext = os.path.splitext(fpath)[1].lower()
+                                if ext in ['.mp4', '.webm', '.mkv'] and os.path.getsize(fpath) > 0:
+                                    downloaded_file = fpath
+                                    logger.info(f"Found recently modified video file: {fname}")
+                                    break
                     except Exception as e:
                         logger.warning(f"Error checking file {fname}: {e}")
         
@@ -514,6 +567,16 @@ async def download_video(
         
         # Verify the file exists and has content
         if downloaded_file and os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
+            # If it's a .part file, rename it to remove the .part extension
+            if downloaded_file.endswith('.part'):
+                new_path = downloaded_file[:-5]  # Remove .part extension
+                try:
+                    os.rename(downloaded_file, new_path)
+                    downloaded_file = new_path
+                    logger.info(f"Renamed partial file to: {os.path.basename(new_path)}")
+                except Exception as e:
+                    logger.warning(f"Failed to rename partial file: {e}")
+            
             logger.info(f"Download successful: {downloaded_file}")
             
             # Clean up other temporary files
