@@ -344,8 +344,13 @@ async def download_video(
                     
                     if best_format:
                         logger.info(f"Selected best format: {best_height}p")
-                        # Use a more reliable format string that includes fallbacks
-                        format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
+                        # For clips, use format_id directly if available
+                        if is_clip and best_format.get('format_id'):
+                            format_string = f"bestvideo[format_id={best_format['format_id']}]+bestaudio[ext=m4a]/best[format_id={best_format['format_id']}]"
+                            logger.info(f"Using direct format_id for clip: {best_format['format_id']}")
+                        else:
+                            # Use a more reliable format string that includes fallbacks
+                            format_string = f"bestvideo[height={best_height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height={best_height}][ext=mp4]/best[height={best_height}][ext=mp4]/best"
                     else:
                         # Fallback to high quality format if specific format not found
                         format_string = 'bestvideo[height>=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[height>=720][ext=mp4]/best'
