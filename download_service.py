@@ -291,22 +291,28 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             'force_generic_extractor': False,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
+                    'player_client': ['android', 'web', 'mweb', 'tv_embedded'],
                     'player_skip': [],
                     'player_params': {
                         'hl': 'en',
                         'gl': 'US',
                         'enablejsapi': '1',
-                        'origin': 'https://www.youtube.com'
+                        'origin': 'https://www.youtube.com',
+                        'client': 'ANDROID',
+                        'client_version': '17.31.35',
+                        'android_client_version': '17.31.35',
+                        'app': 'com.google.android.youtube'
                     }
                 }
             },
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
+                'Accept': '*/*',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/'
+                'Referer': 'https://www.youtube.com/',
+                'X-YouTube-Client-Name': '2',
+                'X-YouTube-Client-Version': '17.31.35'
             }
         }
         
@@ -326,19 +332,28 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
                 vcodec = fmt.get('vcodec', 'none')
                 acodec = fmt.get('acodec', 'none')
                 format_id = fmt.get('format_id', '')
+                format_note = fmt.get('format_note', '')
                 
                 # Log format details
-                logger.info(f"Available format: {format_id} - {height}p - vcodec: {vcodec} - acodec: {acodec}")
+                logger.info(f"Available format: {format_id} - {height}p - vcodec: {vcodec} - acodec: {acodec} - note: {format_note}")
                 
-                # Find best video format
+                # For clips, we need to be more lenient with format selection
                 if vcodec != 'none' and acodec == 'none' and height > 0:
                     if best_video is None or height > best_video.get('height', 0):
                         best_video = fmt
                 
-                # Find best audio format
                 if acodec != 'none' and vcodec == 'none':
                     if best_audio is None:
                         best_audio = fmt
+            
+            if not best_video or not best_audio:
+                # If we can't find separate streams, look for combined formats
+                for fmt in formats:
+                    if fmt.get('vcodec', 'none') != 'none' and fmt.get('acodec', 'none') != 'none':
+                        if best_video is None:
+                            best_video = fmt
+                            best_audio = fmt
+                            break
             
             if not best_video or not best_audio:
                 raise Exception("Could not find suitable video or audio formats")
@@ -374,7 +389,7 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             # Download video
             logger.info(f"Downloading video stream: {best_video.get('format_id')} ({best_video.get('height')}p)")
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11)',
                 'Accept': '*/*',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Origin': 'https://www.youtube.com',
