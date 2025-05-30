@@ -17,6 +17,7 @@ import sys
 import asyncio
 from fastapi import BackgroundTasks
 import logging.handlers
+import requests
 
 # Enhanced logging
 import logging.handlers
@@ -275,9 +276,127 @@ def verify_video_quality(file_path):
     
     return False, "Could not verify quality"
 
+def download_with_custom_method(url, download_id, output_template, ydl_opts):
+    """Custom download method that directly accesses video streams"""
+    try:
+        # First get video info
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if info is None:
+                raise Exception("Failed to extract video information")
+            
+            formats = info.get('formats', [])
+            
+            # Find best video and audio formats
+            best_video = None
+            best_audio = None
+            
+            for fmt in formats:
+                height = fmt.get('height', 0)
+                vcodec = fmt.get('vcodec', 'none')
+                acodec = fmt.get('acodec', 'none')
+                
+                # Log format details
+                logger.info(f"Available format: {fmt.get('format_id')} - {height}p - vcodec: {vcodec} - acodec: {acodec}")
+                
+                # Find best video format
+                if vcodec != 'none' and acodec == 'none' and height > 0:
+                    if best_video is None or height > best_video.get('height', 0):
+                        best_video = fmt
+                
+                # Find best audio format
+                if acodec != 'none' and vcodec == 'none':
+                    if best_audio is None:
+                        best_audio = fmt
+            
+            if not best_video or not best_audio:
+                raise Exception("Could not find suitable video or audio formats")
+            
+            # Download video and audio separately
+            video_url = best_video.get('url')
+            audio_url = best_audio.get('url')
+            
+            if not video_url or not audio_url:
+                raise Exception("Could not get video or audio URLs")
+            
+            # Download video
+            video_path = f"{output_template}_video.mp4"
+            audio_path = f"{output_template}_audio.m4a"
+            final_path = f"{output_template}.mp4"
+            
+            logger.info(f"Downloading video stream: {best_video.get('format_id')} ({best_video.get('height')}p)")
+            with requests.get(video_url, stream=True) as r:
+                r.raise_for_status()
+                with open(video_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            
+            logger.info(f"Downloading audio stream: {best_audio.get('format_id')}")
+            with requests.get(audio_url, stream=True) as r:
+                r.raise_for_status()
+                with open(audio_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            
+            # Merge video and audio using ffmpeg
+            logger.info("Merging video and audio streams...")
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', video_path,
+                '-i', audio_path,
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-strict', 'experimental',
+                '-movflags', 'faststart',
+                final_path
+            ]
+            
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            
+            # Clean up temporary files
+            try:
+                os.remove(video_path)
+                os.remove(audio_path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary files: {e}")
+            
+            # Verify the final file
+            if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                quality_ok, quality_msg = verify_video_quality(final_path)
+                if quality_ok:
+                    logger.info(f"Custom download successful with good quality: {quality_msg}")
+                    return info
+                else:
+                    logger.warning(f"Custom download completed but quality check failed: {quality_msg}")
+                    os.remove(final_path)
+                    raise Exception("Quality check failed")
+            
+            raise Exception("Failed to create final video file")
+            
+    except Exception as e:
+        logger.error(f"Custom download method failed: {str(e)}")
+        # Clean up any partial files
+        for path in [video_path, audio_path, final_path]:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to clean up {path}: {cleanup_error}")
+        raise
+
 def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
     """Try different format selection strategies until one works"""
     
+    # First try custom download method
+    try:
+        logger.info("Attempting custom download method...")
+        return download_with_custom_method(url, download_id, output_template, ydl_opts)
+    except Exception as e:
+        logger.warning(f"Custom download method failed: {str(e)}")
+    
+    # If custom method fails, try standard strategies
     strategies = [
         # Strategy 1: Direct format IDs with specific options
         lambda best_video, best_audio: {
