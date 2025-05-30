@@ -315,24 +315,58 @@ def download_with_custom_method(url, download_id, output_template, ydl_opts):
             logger.info("Converting clip URL to parent video URL...")
             # Extract the clip ID
             clip_id = url.split('clip/')[-1].split('?')[0]
-            # Get the parent video info first
-            with yt_dlp.YoutubeDL(info_opts) as ydl:
-                try:
-                    # Try to get info about the clip
+            
+            # Try to get the parent video URL using a different approach
+            try:
+                # First try to get the clip info
+                with yt_dlp.YoutubeDL({
+                    'quiet': True,
+                    'no_warnings': True,
+                    'extract_flat': True,
+                    'force_generic_extractor': False
+                }) as ydl:
                     clip_info = ydl.extract_info(url, download=False)
                     if clip_info and 'webpage_url' in clip_info:
                         parent_url = clip_info['webpage_url']
                         logger.info(f"Found parent video URL: {parent_url}")
                         url = parent_url
-                except Exception as e:
-                    logger.warning(f"Failed to get clip info: {e}")
-                    # If we can't get clip info, try to construct the parent URL
-                    if 'youtube.com/clip' in url:
-                        parent_url = url.replace('/clip/', '/watch?v=')
                     else:
-                        parent_url = url.replace('/clip/', '/watch?v=')
-                    logger.info(f"Using constructed parent URL: {parent_url}")
-                    url = parent_url
+                        # If we can't get the parent URL from clip info, try to get it from the video info
+                        video_info = ydl.extract_info(f"https://www.youtube.com/watch?v={clip_id}", download=False)
+                        if video_info and 'webpage_url' in video_info:
+                            parent_url = video_info['webpage_url']
+                            logger.info(f"Found parent video URL from video info: {parent_url}")
+                            url = parent_url
+                        else:
+                            # If all else fails, try to construct the URL
+                            parent_url = f"https://www.youtube.com/watch?v={clip_id}"
+                            logger.info(f"Using constructed parent URL: {parent_url}")
+                            url = parent_url
+            except Exception as e:
+                logger.warning(f"Failed to get parent URL: {e}")
+                # If we can't get the parent URL, try to construct it
+                if 'youtube.com/clip' in url:
+                    parent_url = url.replace('/clip/', '/watch?v=')
+                else:
+                    parent_url = url.replace('/clip/', '/watch?v=')
+                logger.info(f"Using fallback parent URL: {parent_url}")
+                url = parent_url
+        
+        # Add specific options for clips
+        if 'youtube.com/clip' in url or 'youtu.be/clip' in url:
+            info_opts.update({
+                'format_sort': ['res:1080', 'ext:mp4', 'vcodec:h264', 'acodec:aac', 'size', 'br'],
+                'format': 'bestvideo[height<=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
+                'postprocessor_args': {
+                    'ffmpeg': [
+                        '-c:v', 'copy',
+                        '-c:a', 'aac',
+                        '-b:a', '192k',
+                        '-ar', '48000',
+                        '-strict', 'experimental'
+                    ]
+                }
+            })
         
         with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
