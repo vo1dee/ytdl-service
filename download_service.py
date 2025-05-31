@@ -17,7 +17,6 @@ import sys
 import asyncio
 from fastapi import BackgroundTasks
 import logging.handlers
-import requests
 
 # Enhanced logging
 import logging.handlers
@@ -102,7 +101,7 @@ app = FastAPI()
 
 class DownloadRequest(BaseModel):
     url: str
-    format: str = 'bestvideo[height<=2160][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160][ext=mp4]/best'
+    format: str = 'best[height<=2160][ext=mp4]/best[height<=1440][ext=mp4]/best[height<=1080][ext=mp4]/best[ext=mp4]/best'
     
     # Add additional optional parameters
     subtitles: bool = False
@@ -137,7 +136,7 @@ def check_and_update_ytdlp():
         return False, current_version
     except Exception as e:
         logger.error(f"Error checking/updating yt-dlp: {str(e)}")
-        return False, current_version
+        return False, current_version if 'current_version' in locals() else "unknown"
 
 async def cleanup_old_files():
     """Clean up files older than FILE_MAX_AGE"""
@@ -240,15 +239,15 @@ async def health_check():
             "timestamp": datetime.now().isoformat()
         }
 
-def verify_video_quality(file_path):
-    """Verify the downloaded video meets quality expectations"""
+def get_video_info(file_path):
+    """Get video information using ffprobe"""
     try:
         ffprobe_cmd = [
             'ffprobe',
-            '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height,codec_name,bit_rate',
-            '-of', 'json',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            '-show_streams',
             file_path
         ]
         result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
@@ -256,438 +255,30 @@ def verify_video_quality(file_path):
         if result.returncode == 0:
             import json
             data = json.loads(result.stdout)
-            streams = data.get('streams', [])
-            if streams:
-                video_stream = streams[0]
-                width = video_stream.get('width')
-                height = video_stream.get('height')
-                codec = video_stream.get('codec_name')
+            
+            video_stream = None
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    video_stream = stream
+                    break
+            
+            if video_stream:
+                width = video_stream.get('width', 0)
+                height = video_stream.get('height', 0)
+                codec = video_stream.get('codec_name', 'unknown')
                 
-                logger.info(f"Downloaded video: {width}x{height}, codec: {codec}")
-                
-                # Check if resolution is acceptable
-                if height and height >= 720:  # At least 720p
-                    return True, f"Good quality: {width}x{height}"
-                else:
-                    return False, f"Low quality: {width}x{height}"
+                logger.info(f"Video info: {width}x{height}, codec: {codec}")
+                return {
+                    'width': width,
+                    'height': height,
+                    'codec': codec,
+                    'quality_score': height if height else 0
+                }
             
     except Exception as e:
-        logger.error(f"Error verifying video quality: {e}")
+        logger.error(f"Error getting video info: {e}")
     
-    return False, "Could not verify quality"
-
-def download_with_custom_method(url, download_id, output_template, ydl_opts):
-    """Custom download method that directly accesses video streams"""
-    video_path = None
-    audio_path = None
-    final_path = None
-    
-    try:
-        # First get video info with specific options
-        info_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'force_generic_extractor': False,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],
-                    'player_skip': [],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US',
-                        'enablejsapi': '1',
-                        'origin': 'https://www.youtube.com'
-                    }
-                }
-            },
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/'
-            }
-        }
-        
-        # For clips, we need to modify the URL to get the parent video
-        if 'youtube.com/clip' in url or 'youtu.be/clip' in url:
-            logger.info("Converting clip URL to parent video URL...")
-            # Extract the clip ID
-            clip_id = url.split('clip/')[-1].split('?')[0]
-            
-            # Try to get the parent video URL using a different approach
-            try:
-                # First try to get the clip info
-                with yt_dlp.YoutubeDL({
-                    'quiet': True,
-                    'no_warnings': True,
-                    'extract_flat': True,
-                    'force_generic_extractor': False
-                }) as ydl:
-                    clip_info = ydl.extract_info(url, download=False)
-                    if clip_info and 'webpage_url' in clip_info:
-                        parent_url = clip_info['webpage_url']
-                        logger.info(f"Found parent video URL: {parent_url}")
-                        url = parent_url
-                    else:
-                        # If we can't get the parent URL from clip info, try to get it from the video info
-                        video_info = ydl.extract_info(f"https://www.youtube.com/watch?v={clip_id}", download=False)
-                        if video_info and 'webpage_url' in video_info:
-                            parent_url = video_info['webpage_url']
-                            logger.info(f"Found parent video URL from video info: {parent_url}")
-                            url = parent_url
-                        else:
-                            # If all else fails, try to construct the URL
-                            parent_url = f"https://www.youtube.com/watch?v={clip_id}"
-                            logger.info(f"Using constructed parent URL: {parent_url}")
-                            url = parent_url
-            except Exception as e:
-                logger.warning(f"Failed to get parent URL: {e}")
-                # If we can't get the parent URL, try to construct it
-                if 'youtube.com/clip' in url:
-                    parent_url = url.replace('/clip/', '/watch?v=')
-                else:
-                    parent_url = url.replace('/clip/', '/watch?v=')
-                logger.info(f"Using fallback parent URL: {parent_url}")
-                url = parent_url
-        
-        # Add specific options for clips
-        if 'youtube.com/clip' in url or 'youtu.be/clip' in url:
-            info_opts.update({
-                'format_sort': ['res:1080', 'ext:mp4', 'vcodec:h264', 'acodec:aac', 'size', 'br'],
-                'format': 'bestvideo[height<=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
-                'postprocessor_args': {
-                    'ffmpeg': [
-                        '-c:v', 'copy',
-                        '-c:a', 'aac',
-                        '-b:a', '192k',
-                        '-ar', '48000',
-                        '-strict', 'experimental'
-                    ]
-                }
-            })
-        
-        with yt_dlp.YoutubeDL(info_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if info is None:
-                raise Exception("Failed to extract video information")
-            
-            formats = info.get('formats', [])
-            
-            # Find best video and audio formats
-            best_video = None
-            best_audio = None
-            
-            for fmt in formats:
-                height = fmt.get('height', 0)
-                vcodec = fmt.get('vcodec', 'none')
-                acodec = fmt.get('acodec', 'none')
-                format_id = fmt.get('format_id', '')
-                format_note = fmt.get('format_note', '')
-                
-                # Log format details
-                logger.info(f"Available format: {format_id} - {height}p - vcodec: {vcodec} - acodec: {acodec} - note: {format_note}")
-                
-                # For clips, we need to be more lenient with format selection
-                if vcodec != 'none' and acodec == 'none' and height > 0:
-                    if best_video is None or height > best_video.get('height', 0):
-                        best_video = fmt
-                
-                if acodec != 'none' and vcodec == 'none':
-                    if best_audio is None:
-                        best_audio = fmt
-            
-            if not best_video or not best_audio:
-                # If we can't find separate streams, look for combined formats
-                for fmt in formats:
-                    if fmt.get('vcodec', 'none') != 'none' and fmt.get('acodec', 'none') != 'none':
-                        if best_video is None:
-                            best_video = fmt
-                            best_audio = fmt
-                            break
-            
-            if not best_video or not best_audio:
-                raise Exception("Could not find suitable video or audio formats")
-            
-            # Get direct URLs
-            video_url = best_video.get('url')
-            audio_url = best_audio.get('url')
-            
-            if not video_url or not audio_url:
-                # Try to get URLs using format IDs
-                logger.info("Direct URLs not available, trying to get URLs using format IDs...")
-                format_opts = info_opts.copy()
-                format_opts['format'] = f"{best_video['format_id']}+{best_audio['format_id']}"
-                
-                with yt_dlp.YoutubeDL(format_opts) as ydl:
-                    format_info = ydl.extract_info(url, download=False)
-                    if format_info:
-                        formats = format_info.get('formats', [])
-                        for fmt in formats:
-                            if fmt.get('format_id') == best_video['format_id']:
-                                video_url = fmt.get('url')
-                            elif fmt.get('format_id') == best_audio['format_id']:
-                                audio_url = fmt.get('url')
-            
-            if not video_url or not audio_url:
-                raise Exception("Could not get video or audio URLs")
-            
-            # Set up file paths
-            video_path = f"{output_template}_video.mp4"
-            audio_path = f"{output_template}_audio.m4a"
-            final_path = f"{output_template}.mp4"
-            
-            # Download video
-            logger.info(f"Downloading video stream: {best_video.get('format_id')} ({best_video.get('height')}p)")
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Origin': 'https://www.youtube.com',
-                'Referer': 'https://www.youtube.com/',
-                'Range': 'bytes=0-'
-            }
-            
-            with requests.get(video_url, stream=True, headers=headers) as r:
-                r.raise_for_status()
-                with open(video_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-            
-            # Download audio
-            logger.info(f"Downloading audio stream: {best_audio.get('format_id')}")
-            with requests.get(audio_url, stream=True, headers=headers) as r:
-                r.raise_for_status()
-                with open(audio_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-            
-            # Merge video and audio using ffmpeg
-            logger.info("Merging video and audio streams...")
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-i', video_path,
-                '-i', audio_path,
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                '-strict', 'experimental',
-                '-movflags', 'faststart',
-                '-y',  # Overwrite output file if it exists
-                final_path
-            ]
-            
-            result = subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                logger.error(f"FFmpeg error: {result.stderr}")
-                raise Exception("FFmpeg failed to merge streams")
-            
-            # Clean up temporary files
-            try:
-                os.remove(video_path)
-                os.remove(audio_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary files: {e}")
-            
-            # Verify the final file
-            if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-                quality_ok, quality_msg = verify_video_quality(final_path)
-                if quality_ok:
-                    logger.info(f"Custom download successful with good quality: {quality_msg}")
-                    return info
-                else:
-                    logger.warning(f"Custom download completed but quality check failed: {quality_msg}")
-                    os.remove(final_path)
-                    raise Exception("Quality check failed")
-            
-            raise Exception("Failed to create final video file")
-            
-    except Exception as e:
-        logger.error(f"Custom download method failed: {str(e)}")
-        # Clean up any partial files
-        for path in [video_path, audio_path, final_path]:
-            try:
-                if path and os.path.exists(path):
-                    os.remove(path)
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up {path}: {cleanup_error}")
-        raise
-
-def try_multiple_format_strategies(url, download_id, output_template, ydl_opts):
-    """Try different format selection strategies until one works"""
-    
-    # First try custom download method
-    try:
-        logger.info("Attempting custom download method...")
-        return download_with_custom_method(url, download_id, output_template, ydl_opts)
-    except Exception as e:
-        logger.warning(f"Custom download method failed: {str(e)}")
-    
-    # If custom method fails, try standard strategies
-    strategies = [
-        # Strategy 1: Direct format IDs with specific options
-        lambda best_video, best_audio: {
-            'format': f"{best_video['format_id']}+{best_audio['format_id']}",
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'web'],
-                    'player_skip': [],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US',
-                        'enablejsapi': '1',
-                        'origin': 'https://www.youtube.com'
-                    }
-                }
-            }
-        },
-        
-        # Strategy 2: Force specific format with additional options
-        lambda best_video, best_audio: {
-            'format': f"bestvideo[format_id={best_video['format_id']}]+bestaudio[format_id={best_audio['format_id']}]",
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web', 'mweb'],
-                    'player_skip': [],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US'
-                    }
-                }
-            }
-        },
-        
-        # Strategy 3: Height-based with specific codec and options
-        lambda best_video, best_audio: {
-            'format': f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]",
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android'],
-                    'player_skip': [],
-                    'player_params': {
-                        'hl': 'en',
-                        'gl': 'US'
-                    }
-                }
-            }
-        },
-        
-        # Strategy 4: Less restrictive height-based
-        lambda best_video, best_audio: {
-            'format': f"bestvideo[height={best_video.get('height', 1080)}][ext=mp4]+bestaudio[ext=m4a]",
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],
-                    'player_skip': []
-                }
-            }
-        },
-        
-        # Strategy 5: Generic fallback with minimal options
-        lambda best_video, best_audio: {
-            'format': 'bestvideo+bestaudio/best',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['web'],
-                    'player_skip': []
-                }
-            }
-        }
-    ]
-    
-    # Get best formats first
-    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if info is None:
-            raise Exception("Failed to extract video information")
-        
-        formats = info.get('formats', [])
-        best_video = None
-        best_audio = None
-        
-        for fmt in formats:
-            height = fmt.get('height', 0)
-            vcodec = fmt.get('vcodec', 'none')
-            acodec = fmt.get('acodec', 'none')
-            
-            # Find best video format
-            if vcodec != 'none' and acodec == 'none' and height > 0:
-                if best_video is None or height > best_video.get('height', 0):
-                    best_video = fmt
-            
-            # Find best audio format
-            if acodec != 'none' and vcodec == 'none':
-                if best_audio is None:
-                    best_audio = fmt
-        
-        if not best_video or not best_audio:
-            raise Exception("Could not find suitable video or audio formats")
-    
-    # Try each strategy
-    for i, strategy in enumerate(strategies, 1):
-        try:
-            strategy_opts = strategy(best_video, best_audio)
-            logger.info(f"Attempting download strategy {i}: {strategy_opts['format']}")
-            
-            ydl_opts_copy = ydl_opts.copy()
-            ydl_opts_copy.update({
-                'format': strategy_opts['format'],
-                'format_sort': [
-                    f'res:{best_video.get("height", 1080)}',
-                    'fps:30',
-                    'vcodec:h264',
-                    'acodec:aac',
-                    'ext:mp4',
-                    'size',
-                    'br'
-                ],
-                'extractor_args': strategy_opts['extractor_args'],
-                'concurrent_fragment_downloads': 1,
-                'retries': 20,
-                'fragment_retries': 20,
-                'retry_sleep': 10,
-                'socket_timeout': 60,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-us,en;q=0.5',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1',
-                    'Origin': 'https://www.youtube.com',
-                    'Referer': 'https://www.youtube.com/'
-                }
-            })
-            
-            with yt_dlp.YoutubeDL(ydl_opts_copy) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    # Verify the downloaded file quality
-                    files_in_dir = os.listdir(DOWNLOADS_DIR)
-                    for fname in files_in_dir:
-                        if fname.startswith(download_id):
-                            fpath = os.path.join(DOWNLOADS_DIR, fname)
-                            if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                                quality_ok, quality_msg = verify_video_quality(fpath)
-                                if quality_ok:
-                                    logger.info(f"Strategy {i} successful with good quality!")
-                                    return info
-                                else:
-                                    logger.warning(f"Strategy {i} downloaded but quality check failed: {quality_msg}")
-                                    # Delete the low quality file and try next strategy
-                                    try:
-                                        os.remove(fpath)
-                                    except Exception as e:
-                                        logger.warning(f"Failed to remove low quality file: {e}")
-                    
-        except Exception as e:
-            logger.warning(f"Strategy {i} failed: {str(e)}")
-            continue
-    
-    raise Exception("All download strategies failed to get high quality version")
+    return {'width': 0, 'height': 0, 'codec': 'unknown', 'quality_score': 0}
 
 @app.post("/download")
 async def download_video(
@@ -695,265 +286,214 @@ async def download_video(
     api_key: str = Depends(verify_api_key)
 ):
     download_id = str(uuid.uuid4())[:8]
-    output_template_base = os.path.join(DOWNLOADS_DIR, f'{download_id}')
-    output_template = f'{output_template_base}.%(ext)s'
-    download_info = {}
-
+    output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s')
+    
     # Clean up any existing files with this ID
-    for item in os.listdir(DOWNLOADS_DIR):
-        if item.startswith(download_id):
-            item_path = os.path.join(DOWNLOADS_DIR, item)
-            try:
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-            except Exception as e:
-                logger.warning(f"Error cleaning up pre-existing file {item}: {e}")
+    cleanup_files(download_id)
 
     try:
         logger.info(f"Starting download for URL: {request.url}")
         
-        # Initialize ydl_opts with default settings
+        # Determine format string based on request parameters
+        if request.audio_only:
+            format_string = 'bestaudio[ext=m4a]/bestaudio/best'
+        else:
+            # Build format string prioritizing high quality
+            max_height = request.max_height if request.max_height > 0 else 2160
+            
+            format_parts = []
+            
+            # For YouTube, try specific high-quality formats first
+            if 'youtube.com' in request.url or 'youtu.be' in request.url:
+                # Try to get best video + audio combination
+                format_parts.extend([
+                    f'bestvideo[height<={max_height}][ext=mp4][vcodec*=avc1]+bestaudio[ext=m4a]',
+                    f'bestvideo[height<={max_height}][ext=webm][vcodec*=vp9]+bestaudio[ext=webm]',
+                    f'bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]',
+                    f'bestvideo[height<={max_height}]+bestaudio',
+                ])
+            
+            # Add fallback formats
+            format_parts.extend([
+                f'best[height<={max_height}][ext=mp4]',
+                f'best[height<={max_height}][ext=webm]',
+                f'best[height<={max_height}]',
+                'best[ext=mp4]',
+                'best'
+            ])
+            
+            format_string = '/'.join(format_parts)
+        
+        # Enhanced ydl_opts for better quality and reliability
         ydl_opts = {
+            'format': format_string,
             'outtmpl': output_template,
             'restrictfilenames': True,
-            'merge_output_format': 'mp4',
-            'concurrent_fragment_downloads': 1,
-            'retries': 20,
-            'fragment_retries': 20,
+            'merge_output_format': 'mp4' if not request.audio_only else None,
+            'writesubtitles': request.subtitles,
+            'writeautomaticsub': request.subtitles,
+            'subtitleslangs': ['en', 'en-US'] if request.subtitles else [],
+            
+            # Quality and encoding settings
+            'postprocessors': [
+                {
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                } if not request.audio_only else {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'm4a',
+                    'preferredquality': '192',
+                }
+            ],
+            
+            # Network and retry settings
+            'retries': 10,
+            'fragment_retries': 10,
+            'socket_timeout': 30,
+            'concurrent_fragment_downloads': 4,
+            
+            # Headers to avoid blocking
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            },
+            
+            # Extraction settings
+            'extract_flat': False,
+            'ignoreerrors': False,
             'geo_bypass': True,
             'nocheckcertificate': True,
-            'verbose': False,
-            'quiet': True,
-            'no_warnings': True,
+            
+            # Progress and logging
+            'quiet': False,
+            'no_warnings': False,
+            'verbose': True,
             'progress_hooks': [
                 lambda d: logger.info(
-                    f"yt-dlp progress: {d.get('_percent_str', 'N/A')} {d.get('_eta_str', 'N/A')}"
-                ) if d['status'] != 'finished' else logger.info("yt-dlp progress: Finished")
+                    f"Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
+                ) if d['status'] == 'downloading' else logger.info(f"Download status: {d['status']}")
             ],
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1'
-            },
-            'socket_timeout': 60,
-            'extractor_retries': 5,
-            'ignoreerrors': True,
-            'no_color': True,
-            'extract_flat': False,
-            'force_generic_extractor': False,
-            'prefer_ffmpeg': True,
-            'postprocessor_args': {
-                'ffmpeg': [
-                    '-movflags', 'faststart',
-                    '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', '18',
-                    '-profile:v', 'high',
-                    '-level', '4.1',
-                    '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-ar', '48000',
-                    '-strict', 'experimental'
-                ]
-            },
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }]
         }
-
-        # Check if it's a YouTube clip
-        is_clip = 'youtube.com/clip' in request.url or 'youtu.be/clip' in request.url
-        is_shorts = 'youtube.com/shorts' in request.url or 'youtu.be/shorts' in request.url
         
-        if is_clip or is_shorts:
-            logger.info("Detected YouTube clip/shorts URL, applying specific settings")
-            
-            # Try multiple format strategies
-            try:
-                info = try_multiple_format_strategies(request.url, download_id, output_template, ydl_opts)
-            except Exception as e:
-                logger.error(f"All format strategies failed: {str(e)}")
-                raise
+        # Special handling for YouTube clips and shorts
+        if any(x in request.url for x in ['youtube.com/clip', 'youtu.be/clip', 'youtube.com/shorts', 'youtu.be/shorts']):
+            logger.info("Detected YouTube clip/shorts, using optimized settings")
+            ydl_opts.update({
+                'format': f'best[height<={max_height}]/best',
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'web'],
+                        'skip': ['dash', 'hls'] if 'clip' in request.url else []
+                    }
+                }
+            })
 
-        else:
-            # Normal video download
-            if request.audio_only:
-                format_string = 'bestaudio[ext=m4a]/bestaudio/best'
-            elif request.max_height and request.max_height > 0:
-                format_string = f'bestvideo[height<={request.max_height}][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<={request.max_height}][ext=mp4]+bestaudio[ext=m4a]/best[height<={request.max_height}][ext=mp4]/best'
-            else:
-                format_string = request.format
-            
-            ydl_opts['format'] = format_string
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=True)
+        # Perform the download
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(request.url, download=True)
+            if not info:
+                raise Exception("Failed to extract video information")
 
-        # Give the filesystem a moment to finalize writes
-        time.sleep(5)
+        # Wait for file system to catch up
+        time.sleep(2)
 
         # Find the downloaded file
-        files_in_dir = os.listdir(DOWNLOADS_DIR)
-        logger.info(f"Files in directory after download: {files_in_dir}")
+        downloaded_file = find_downloaded_file(download_id)
         
-        downloaded_file = None
-        
-        # First, look for files with our download_id
-        potential_files = [f for f in files_in_dir if f.startswith(f"{download_id}.")]
-        
-        if potential_files:
-            for fname in potential_files:
-                fpath = os.path.join(DOWNLOADS_DIR, fname)
-                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
-                    if fname.endswith('.part'):
-                        logger.info(f"Found partial file {fname}, waiting for completion...")
-                        time.sleep(10)
-                        if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
-                            initial_size = os.path.getsize(fpath)
-                            time.sleep(5)
-                            if os.path.getsize(fpath) == initial_size:
-                                downloaded_file = fpath
-                                logger.info(f"Partial file appears to be complete: {fname}")
-                                break
-                    else:
-                        downloaded_file = fpath
-                        logger.info(f"Found complete file: {fname}")
-                        break
-
         if not downloaded_file:
-            logger.info("No file found with exact ID match, searching for recently modified files...")
-            file_times = []
-            for fname in files_in_dir:
-                fpath = os.path.join(DOWNLOADS_DIR, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        mtime = os.path.getmtime(fpath)
-                        file_times.append((fpath, mtime, fname))
-                    except Exception as e:
-                        logger.warning(f"Error getting mtime for {fname}: {e}")
-            
-            file_times.sort(key=lambda x: x[1], reverse=True)
-            recent_files = [(f[0], f[2]) for f in file_times[:5]]
-            logger.info(f"Most recently modified files: {[f[0] for f in recent_files]}")
-            
-            for fpath, fname in recent_files:
-                if os.path.getsize(fpath) > 0:
-                    if fname.endswith('.part'):
-                        logger.info(f"Found partial file {fname}, waiting for completion...")
-                        time.sleep(5)
-                        if os.path.exists(fpath) and os.path.getsize(fpath) > 0:
-                            initial_size = os.path.getsize(fpath)
-                            time.sleep(2)
-                            if os.path.getsize(fpath) == initial_size:
-                                downloaded_file = fpath
-                                logger.info(f"Partial file appears to be complete: {fname}")
-                                break
-                    else:
-                        ext = os.path.splitext(fpath)[1].lower()
-                        if ext in ['.mp4', '.webm', '.mkv']:
-                            downloaded_file = fpath
-                            logger.info(f"Found recently downloaded file: {fname}")
-                            break
+            raise Exception("Downloaded file not found")
 
-        if not downloaded_file:
-            logger.error(f"No suitable downloaded file found in {DOWNLOADS_DIR}")
-            raise Exception("Downloaded file not found or named as expected.")
+        # Get video information
+        video_info = get_video_info(downloaded_file)
+        
+        # Log success
+        logger.info(f"Download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
 
-        # Verify the file exists and has content
-        if downloaded_file and os.path.exists(downloaded_file) and os.path.getsize(downloaded_file) > 0:
-            # If it's a .part file, rename it to remove the .part extension
-            if downloaded_file.endswith('.part'):
-                new_path = downloaded_file[:-5]
-                try:
-                    os.rename(downloaded_file, new_path)
-                    downloaded_file = new_path
-                    logger.info(f"Renamed partial file to: {os.path.basename(new_path)}")
-                except Exception as e:
-                    logger.warning(f"Failed to rename partial file: {e}")
-
-            # Verify video quality
-            quality_ok, quality_msg = verify_video_quality(downloaded_file)
-            logger.info(f"Quality check: {quality_msg}")
-
-            if not quality_ok and (is_clip or is_shorts):
-                logger.warning("Downloaded quality is lower than expected, trying alternative method...")
-                # Could implement retry logic here if needed
-
-            # Clean up other temporary files
-            for item in os.listdir(DOWNLOADS_DIR):
-                if item.startswith(download_id) and os.path.join(DOWNLOADS_DIR, item) != downloaded_file:
-                    item_path = os.path.join(DOWNLOADS_DIR, item)
-                    try:
-                        if os.path.isfile(item_path):
-                            os.remove(item_path)
-                            logger.info(f"Cleaned up artifact file: {item}")
-                    except Exception as e:
-                        logger.warning(f"Failed to clean up item {item}: {e}")
-
-            # Return success response
-            return {
-                "success": True,
-                "file_path": os.path.basename(downloaded_file),
-                "title": info.get('title', 'Video'),
-                "url": request.url,
-                "description": info.get('description', ''),
-                "tags": info.get('tags', []),
-                "duration": info.get('duration'),
-                "uploader": info.get('uploader'),
-                "file_size_bytes": os.path.getsize(downloaded_file),
-                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-                "quality": quality_msg
-            }
-        else:
-            logger.error(f"Downloaded file verification failed: {downloaded_file}")
-            raise Exception("Downloaded file verification failed")
+        # Return success response
+        return {
+            "success": True,
+            "file_path": os.path.basename(downloaded_file),
+            "title": info.get('title', 'Video'),
+            "url": request.url,
+            "description": info.get('description', ''),
+            "tags": info.get('tags', []),
+            "duration": info.get('duration'),
+            "uploader": info.get('uploader'),
+            "file_size_bytes": os.path.getsize(downloaded_file),
+            "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+            "video_info": video_info,
+            "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
+        }
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        logger.error(f"YouTube download error: {error_msg}")
-        
-        # Cleanup any partial files
+        logger.error(f"yt-dlp download error: {error_msg}")
         cleanup_files(download_id)
         
         return {
             "success": False,
-            "error": error_msg,
-            "is_clip": is_clip
+            "error": f"Download failed: {error_msg}",
+            "error_type": "download_error"
         }
     except Exception as e:
-        logger.error(f"Download failed: {str(e)}")
-        
-        # Cleanup any partial files
+        logger.error(f"Download failed with exception: {str(e)}")
         cleanup_files(download_id)
         
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "error_type": "general_error"
         }
+
+def find_downloaded_file(download_id):
+    """Find the downloaded file with the given ID"""
+    try:
+        files_in_dir = os.listdir(DOWNLOADS_DIR)
+        
+        # Look for files with our download_id
+        matching_files = []
+        for fname in files_in_dir:
+            if fname.startswith(download_id):
+                fpath = os.path.join(DOWNLOADS_DIR, fname)
+                if os.path.isfile(fpath) and os.path.getsize(fpath) > 0:
+                    matching_files.append((fpath, os.path.getsize(fpath), fname))
+        
+        if matching_files:
+            # Sort by file size (largest first) to get the main video file
+            matching_files.sort(key=lambda x: x[1], reverse=True)
+            best_file = matching_files[0][0]
+            logger.info(f"Found downloaded file: {os.path.basename(best_file)}")
+            return best_file
+        
+        logger.error("No matching files found")
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error finding downloaded file: {e}")
+        return None
 
 def cleanup_files(prefix):
     """Clean up all files with the given prefix"""
-    for item in os.listdir(DOWNLOADS_DIR):
-        if item.startswith(prefix):
-            item_path = os.path.join(DOWNLOADS_DIR, item)
-            try:
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-                    logger.info(f"Cleaned up file: {item}")
-                elif os.path.isdir(item_path):
-                    try:
-                        if not os.listdir(item_path):
-                            os.rmdir(item_path)
-                            logger.info(f"Cleaned up empty directory: {item}")
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.warning(f"Failed to clean up item {item}: {e}")
+    try:
+        for item in os.listdir(DOWNLOADS_DIR):
+            if item.startswith(prefix):
+                item_path = os.path.join(DOWNLOADS_DIR, item)
+                try:
+                    if os.path.isfile(item_path):
+                        os.remove(item_path)
+                        logger.info(f"Cleaned up file: {item}")
+                    elif os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                        logger.info(f"Cleaned up directory: {item}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up item {item}: {e}")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
 
 @app.get("/files/{filename}")
 async def get_file(
