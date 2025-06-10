@@ -115,12 +115,12 @@ async def verify_api_key(api_key_header: str = Security(api_key_header)):
 
 class DownloadRequest(BaseModel):
     url: str
-    format: str = 'best[height<=2160][ext=mp4]/best[height<=1440][ext=mp4]/best[height<=1080][ext=mp4]/best[ext=mp4]/best'
+    format: str = 'best[ext=mp4][vcodec*=avc1][height<=1080]/best[ext=mp4][height<=1080]/best[ext=mp4]/best'  # iOS-compatible H.264 default
     
     # Add additional optional parameters
     subtitles: bool = False
     audio_only: bool = False
-    max_height: int = 2160  # Max video height (e.g., 720, 1080, 2160, etc.)
+    max_height: int = 1080  # Reduced default for better iOS compatibility
 
 def check_and_update_ytdlp():
     """Check if yt-dlp is up to date and update if necessary"""
@@ -327,53 +327,70 @@ async def download_video(
         if request.audio_only:
             format_string = 'bestaudio[ext=m4a]/bestaudio/best'
         else:
-            # Build format string prioritizing high quality
-            max_height = request.max_height if request.max_height > 0 else 2160
+            # Build format string prioritizing iOS-compatible formats (simplified and more aggressive)
+            max_height = request.max_height if request.max_height > 0 else 1080
             
-            format_parts = []
-            
-            # For YouTube, try specific high-quality formats first
-            if 'youtube.com' in request.url or 'youtu.be' in request.url:
-                # Try to get best video + audio combination
-                format_parts.extend([
-                    f'bestvideo[height<={max_height}][ext=mp4][vcodec*=avc1]+bestaudio[ext=m4a]',
-                    f'bestvideo[height<={max_height}][ext=webm][vcodec*=vp9]+bestaudio[ext=webm]',
-                    f'bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]',
-                    f'bestvideo[height<={max_height}]+bestaudio',
-                ])
-            
-            # Add fallback formats
-            format_parts.extend([
-                f'best[height<={max_height}][ext=mp4]',
-                f'best[height<={max_height}][ext=webm]',
-                f'best[height<={max_height}]',
-                'best[ext=mp4]',
+            # Very specific H.264-first approach, prioritizing high resolution WITHOUT merging
+            format_parts = [
+                # First priority: High-resolution single-stream H.264 (aggressive search)
+                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}][acodec~="^mp4a"]',  # Single-stream H.264+AAC at target res
+                f'best[ext=mp4][vcodec*=avc1][height>={max_height}][acodec*=mp4a]',       # Single-stream H.264+AAC at target res
+                f'best[ext=mp4][vcodec~="^avc1"][height>=1080][acodec~="^mp4a"]',         # Single-stream H.264+AAC 1080p
+                f'best[ext=mp4][vcodec*=avc1][height>=1080][acodec*=mp4a]',              # Single-stream H.264+AAC 1080p
+                f'best[ext=mp4][vcodec~="^avc1"][height>=720][acodec~="^mp4a"]',          # Single-stream H.264+AAC 720p+
+                f'best[ext=mp4][vcodec*=avc1][height>=720][acodec*=mp4a]',               # Single-stream H.264+AAC 720p+
+                
+                # Second priority: Any high-resolution single-stream H.264
+                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}]',                 # Any single-stream H.264 at target res
+                f'best[ext=mp4][vcodec*=avc1][height>={max_height}]',                    # Any single-stream H.264 at target res
+                f'best[ext=mp4][vcodec~="^avc1"][height>=1080]',                         # Any single-stream H.264 1080p
+                f'best[ext=mp4][vcodec*=avc1][height>=1080]',                            # Any single-stream H.264 1080p
+                f'best[ext=mp4][vcodec~="^avc1"][height>=720]',                          # Any single-stream H.264 720p+
+                f'best[ext=mp4][vcodec*=avc1][height>=720]',                             # Any single-stream H.264 720p+
+                
+                # Third priority: YouTube-specific high-quality single-stream formats
+                '22',  # YouTube format 22 is H.264 720p single-stream (reliable)
+                
+                # Fourth priority: Any single-stream H.264 (any resolution)
+                f'best[ext=mp4][vcodec~="^avc1"]',                                       # Any single-stream H.264
+                f'best[ext=mp4][vcodec*=avc1]',                                          # Any single-stream H.264
+                
+                # LAST RESORT: Merging formats (these can cause aspect ratio issues)
+                '137+140/137',  # 1080p H.264 + AAC audio / 1080p H.264 only
+                '136+140/136',  # 720p H.264 + AAC audio / 720p H.264 only  
+                '135+140/135',  # 480p H.264 + AAC audio / 480p H.264 only
+                
+                # Final fallbacks
+                '18',  # YouTube format 18 is H.264 360p single-stream
+                f'best[ext=mp4]',
                 'best'
-            ])
+            ]
             
             format_string = '/'.join(format_parts)
         
-        # Enhanced ydl_opts for better quality and reliability
+        # Enhanced ydl_opts for iOS compatibility with quality priority + minimal post-processing
         ydl_opts = {
             'format': format_string,
             'outtmpl': output_template,
             'restrictfilenames': True,
-            'merge_output_format': 'mp4' if not request.audio_only else None,
             'writesubtitles': request.subtitles,
             'writeautomaticsub': request.subtitles,
             'subtitleslangs': ['en', 'en-US'] if request.subtitles else [],
             
-            # Quality and encoding settings
-            'postprocessors': [
+            # Remove all post-processing to preserve original aspect ratio
+            'postprocessors': [] if not request.audio_only else [
                 {
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                } if not request.audio_only else {
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'm4a',
                     'preferredquality': '192',
                 }
             ],
+            
+            # Only add aspect ratio fix if merging is detected
+            'postprocessor_args': [
+                '-avoid_negative_ts', 'make_zero',  # Fix timing issues
+                '-movflags', '+faststart',          # iOS optimization
+            ] if not request.audio_only else [],
             
             # Network and retry settings
             'retries': 3,
@@ -786,15 +803,15 @@ async def download_youtube_clip_background(request: DownloadRequest, download_id
         download_statuses[download_id]["status"] = "downloading"
         download_statuses[download_id]["progress"] = 25
         
-        # Step 2: Try multiple download strategies
+        # Step 2: Try multiple download strategies with quality priority + iOS conversion
         strategies = [
-            # Strategy 1: No format specification (let yt-dlp decide)
+            # Strategy 1: High-resolution H.264 formats (preferred for iOS)
             {
-                'name': 'Auto format selection',
+                'name': 'High-res H.264 formats',
                 'opts': {
+                    'format': '270+234/232+234/231+234/230+234/229+234',  # 1080p/720p/480p/360p/240p H.264 + audio
                     'outtmpl': output_template,
                     'restrictfilenames': True,
-                    'merge_output_format': 'mp4' if not request.audio_only else None,
                     'quiet': False,
                     'no_warnings': False,
                     'ignoreerrors': False,
@@ -802,33 +819,69 @@ async def download_youtube_clip_background(request: DownloadRequest, download_id
                     'extract_flat': False,
                     'geo_bypass': True,
                     'nocheckcertificate': True,
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
                 }
             },
-            # Strategy 2: Try without format restrictions
+            # Strategy 2: High-resolution VP9 formats (fallback)
             {
-                'name': 'Minimal options',
+                'name': 'High-res VP9 formats',
                 'opts': {
+                    'format': '614+234/609+234/605+234/604+234/602+234',  # 1080p/720p/360p/240p/144p VP9 + audio
                     'outtmpl': output_template,
+                    'restrictfilenames': True,
+                    'quiet': False,
+                    'no_warnings': False,
+                    'ignoreerrors': False,
+                    'retries': 2,
+                    'extract_flat': False,
+                    'geo_bypass': True,
+                    'nocheckcertificate': True,
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
+                }
+            },
+            # Strategy 3: Any H.264 format
+            {
+                'name': 'Any H.264 format',
+                'opts': {
+                    'format': 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/best',
+                    'outtmpl': output_template,
+                    'restrictfilenames': True,
+                    'quiet': False,
+                    'no_warnings': False,
+                    'ignoreerrors': False,
+                    'retries': 2,
+                    'extract_flat': False,
+                    'geo_bypass': True,
+                    'nocheckcertificate': True,
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
+                }
+            },
+            # Strategy 4: Fallback to any format
+            {
+                'name': 'Any format fallback',
+                'opts': {
+                    'format': 'best',
+                    'outtmpl': output_template,
+                    'restrictfilenames': True,
                     'quiet': False,
                     'no_warnings': False,
                     'ignoreerrors': False,
                     'retries': 1,
                     'geo_bypass': True,
                     'nocheckcertificate': True,
-                }
-            },
-            # Strategy 3: Force generic extractor
-            {
-                'name': 'Generic extractor',
-                'opts': {
-                    'outtmpl': output_template,
-                    'force_generic_extractor': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'ignoreerrors': False,
-                    'retries': 1,
-                    'geo_bypass': True,
-                    'nocheckcertificate': True,
+                    'postprocessors': [{
+                        'key': 'FFmpegVideoConvertor',
+                        'preferedformat': 'mp4',
+                    }],
                 }
             }
         ]
