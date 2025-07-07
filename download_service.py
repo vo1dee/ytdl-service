@@ -327,43 +327,24 @@ async def download_video(
         if request.audio_only:
             format_string = 'bestaudio[ext=m4a]/bestaudio/best'
         else:
-            # Build format string prioritizing iOS-compatible formats (simplified and more aggressive)
+            # Build format string prioritizing quality and aspect ratio
             max_height = request.max_height if request.max_height > 0 else 1080
             
-            # Very specific H.264-first approach, prioritizing high resolution WITHOUT merging
+            # Format selection that handles vertical videos and maintains quality
             format_parts = [
-                # First priority: High-resolution single-stream H.264 (aggressive search)
-                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}][acodec~="^mp4a"]',  # Single-stream H.264+AAC at target res
-                f'best[ext=mp4][vcodec*=avc1][height>={max_height}][acodec*=mp4a]',       # Single-stream H.264+AAC at target res
-                f'best[ext=mp4][vcodec~="^avc1"][height>=1080][acodec~="^mp4a"]',         # Single-stream H.264+AAC 1080p
-                f'best[ext=mp4][vcodec*=avc1][height>=1080][acodec*=mp4a]',              # Single-stream H.264+AAC 1080p
-                f'best[ext=mp4][vcodec~="^avc1"][height>=720][acodec~="^mp4a"]',          # Single-stream H.264+AAC 720p+
-                f'best[ext=mp4][vcodec*=avc1][height>=720][acodec*=mp4a]',               # Single-stream H.264+AAC 720p+
+                # First priority: Best quality single-stream formats
+                f'bestvideo[height>={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>={max_height}]',  # Best quality at target resolution
+                f'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=1080]',  # Best 1080p
+                f'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=720]',   # Best 720p+
                 
-                # Second priority: Any high-resolution single-stream H.264
-                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}]',                 # Any single-stream H.264 at target res
-                f'best[ext=mp4][vcodec*=avc1][height>={max_height}]',                    # Any single-stream H.264 at target res
-                f'best[ext=mp4][vcodec~="^avc1"][height>=1080]',                         # Any single-stream H.264 1080p
-                f'best[ext=mp4][vcodec*=avc1][height>=1080]',                            # Any single-stream H.264 1080p
-                f'best[ext=mp4][vcodec~="^avc1"][height>=720]',                          # Any single-stream H.264 720p+
-                f'best[ext=mp4][vcodec*=avc1][height>=720]',                             # Any single-stream H.264 720p+
+                # Second priority: YouTube-specific formats
+                '22/18',  # YouTube formats 22 (720p) and 18 (360p)
                 
-                # Third priority: YouTube-specific high-quality single-stream formats
-                '22',  # YouTube format 22 is H.264 720p single-stream (reliable)
+                # Third priority: Any MP4 with audio
+                f'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                 
-                # Fourth priority: Any single-stream H.264 (any resolution)
-                f'best[ext=mp4][vcodec~="^avc1"]',                                       # Any single-stream H.264
-                f'best[ext=mp4][vcodec*=avc1]',                                          # Any single-stream H.264
-                
-                # LAST RESORT: Merging formats (these can cause aspect ratio issues)
-                '137+140/137',  # 1080p H.264 + AAC audio / 1080p H.264 only
-                '136+140/136',  # 720p H.264 + AAC audio / 720p H.264 only  
-                '135+140/135',  # 480p H.264 + AAC audio / 480p H.264 only
-                
-                # Final fallbacks
-                '18',  # YouTube format 18 is H.264 360p single-stream
-                f'best[ext=mp4]',
-                'best'
+                # Fourth priority: Any video with audio
+                'bestvideo+bestaudio/best'
             ]
             
             format_string = '/'.join(format_parts)
@@ -386,19 +367,29 @@ async def download_video(
                 }
             ],
             
-            # Only add aspect ratio fix if merging is detected
+            # Enhanced post-processing for better quality and aspect ratio handling
             'postprocessor_args': [
                 '-avoid_negative_ts', 'make_zero',  # Fix timing issues
                 '-movflags', '+faststart',          # iOS optimization
+                '-vf', 'scale=-1:1080',             # Scale to 1080p height while maintaining aspect ratio
+                '-c:v', 'libx264',                 # Use H.264 codec
+                '-crf', '18',                      # High quality (lower is better)
+                '-preset', 'medium',               # Good balance of speed and quality
+                '-c:a', 'aac',                     # Use AAC audio
+                '-b:a', '192k',                    # Audio bitrate
+                '-strict', 'experimental',         # Allow experimental features
+                '-y'                              # Overwrite output files
             ] if not request.audio_only else [],
             
-            # Network and retry settings
-            'retries': 3,
-            'fragment_retries': 3,
-            'socket_timeout': 30,
-            'concurrent_fragment_downloads': 1,
+            # Enhanced network and retry settings for better performance
+            'retries': 5,
+            'fragment_retries': 5,
+            'socket_timeout': 60,
+            'concurrent_fragment_downloads': 4,  # Increased parallel downloads
+            'max_downloads': 4,  # Allow multiple downloads at once
+            'http_chunk_size': 10485760,  # 10MB chunks for better performance
             
-            # Headers to avoid blocking
+            # Optimized headers for better compatibility
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': '*/*',
@@ -406,7 +397,8 @@ async def download_video(
                 'Accept-Encoding': 'gzip, deflate, br',
                 'DNT': '1',
                 'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
+                'Range': 'bytes=0-',  # Support for partial downloads
+                'Cache-Control': 'no-cache',
             },
             
             # Extraction settings
