@@ -302,22 +302,93 @@ async def download_video(
     # Clean up any existing files with this ID
     cleanup_files(download_id)
 
-    # For YouTube clips/shorts, check if we should use async download
-    is_youtube_clip = any(x in request.url for x in ['youtube.com/clip', 'youtu.be/clip', 'youtube.com/shorts', 'youtu.be/shorts'])
-    
-    if is_youtube_clip:
-        # For YouTube clips, start background download and return immediately
-        logger.info(f"Starting background download for YouTube clip: {request.url}")
-        background_tasks.add_task(download_youtube_clip_background, request, download_id, output_template)
-        
-        return {
-            "success": True,
-            "message": "Download started in background",
-            "download_id": download_id,
-            "url": request.url,
-            "status": "processing",
-            "check_url": f"/status/{download_id}"
+    # Instagram detection
+    is_instagram = any(x in request.url for x in ["instagram.com/p/", "instagram.com/reel/", "instagram.com/tv/"])
+    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+
+    if is_instagram:
+        logger.info(f"Instagram download attempt: {request.url}")
+        ydl_opts = {
+            'format': request.format or 'bestvideo+bestaudio/best',
+            'outtmpl': output_template,
+            'restrictfilenames': True,
+            'retries': 5,
+            'fragment_retries': 5,
+            'socket_timeout': 60,
+            'concurrent_fragment_downloads': 2,
+            'max_downloads': 2,
+            'http_chunk_size': 10485760,
+            'quiet': False,
+            'no_warnings': False,
+            'verbose': True,
+            'progress_hooks': [
+                lambda d: logger.info(
+                    f"[Instagram] Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
+                ) if d['status'] == 'downloading' else logger.info(f"[Instagram] Download status: {d['status']}")
+            ],
+            'ignoreerrors': False,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Range': 'bytes=0-',
+                'Cache-Control': 'no-cache',
+            },
         }
+        # Use cookies if available
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+            logger.info(f"Using Instagram cookies from {cookies_path}")
+        else:
+            logger.warning("No cookies.txt found for Instagram. Some videos may require login.")
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(request.url, download=True)
+                if not info:
+                    raise Exception("Failed to extract Instagram video information")
+            time.sleep(2)
+            downloaded_file = find_downloaded_file(download_id)
+            if not downloaded_file:
+                raise Exception("Downloaded file not found for Instagram video")
+            video_info = get_video_info(downloaded_file)
+            logger.info(f"Instagram download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
+            return {
+                "success": True,
+                "file_path": os.path.basename(downloaded_file),
+                "download_url": f"/files/{os.path.basename(downloaded_file)}",
+                "title": info.get('title', 'Instagram Video') if info else 'Instagram Video',
+                "url": request.url,
+                "description": info.get('description', '') if info else '',
+                "tags": info.get('tags', []) if info else [],
+                "duration": info.get('duration') if info else None,
+                "uploader": info.get('uploader') if info else None,
+                "file_size_bytes": os.path.getsize(downloaded_file),
+                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                "video_info": video_info,
+                "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
+            }
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            logger.error(f"[Instagram] yt-dlp download error: {error_msg}")
+            cleanup_files(download_id)
+            return {
+                "success": False,
+                "error": f"Instagram download failed: {error_msg}",
+                "error_type": "download_error"
+            }
+        except Exception as e:
+            logger.error(f"[Instagram] Download failed with exception: {str(e)}")
+            cleanup_files(download_id)
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": "general_error"
+            }
     
     # For non-clip content, proceed with synchronous download
     try:
