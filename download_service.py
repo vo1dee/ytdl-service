@@ -289,6 +289,57 @@ def get_video_info(file_path):
     
     return {'width': 0, 'height': 0, 'codec': 'unknown', 'quality_score': 0}
 
+def get_ydl_opts(output_template, preferred_format=None, subtitles=False, audio_only=False):
+    opts = {
+        'outtmpl': output_template,
+        'quiet': False,
+        'no_warnings': False,
+        'ignoreerrors': False,
+        'retries': 2,
+        'geo_bypass': True,
+        'nocheckcertificate': True,
+    }
+    if preferred_format:
+        opts['format'] = preferred_format
+    if subtitles:
+        opts['writesubtitles'] = True
+        opts['writeautomaticsub'] = True
+        opts['subtitleslangs'] = ['en', 'en-US']
+    if audio_only:
+        opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'm4a',
+            'preferredquality': '192',
+        }]
+    return opts
+
+def download_with_fallback(url, output_template, preferred_format, subtitles=False, audio_only=False):
+    # Try preferred format first
+    try:
+        ydl_opts = get_ydl_opts(output_template, preferred_format, subtitles, audio_only)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info:
+                return info
+    except Exception as e:
+        logger.warning(f"Preferred format failed: {e}")
+        # Log full traceback if needed
+        import traceback
+        logger.warning(traceback.format_exc())
+    # Fallback to default format
+    try:
+        fallback_opts = get_ydl_opts(output_template, None, subtitles, audio_only)
+        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info:
+                return info
+    except Exception as e:
+        logger.error(f"Fallback format also failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise Exception("Failed to extract video information (even with fallback)")
+    return None
 
 @app.post("/download")
 async def download_video(
@@ -298,215 +349,87 @@ async def download_video(
 ):
     download_id = str(uuid.uuid4())[:8]
     output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s')
-    
+
     # Clean up any existing files with this ID
     cleanup_files(download_id)
 
-    # Instagram detection
-    is_instagram = any(x in request.url for x in ["instagram.com/p/", "instagram.com/reel/", "instagram.com/tv/"])
-    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+    # For YouTube clips/shorts, check if we should use async download
+    is_youtube_clip = any(x in request.url for x in ['youtube.com/clip', 'youtu.be/clip', 'youtube.com/shorts', 'youtu.be/shorts'])
 
-    if is_instagram:
-        logger.info(f"Instagram download attempt: {request.url}")
-        ydl_opts = {
-            'format': request.format or 'bestvideo+bestaudio/best',
-            'outtmpl': output_template,
-            'restrictfilenames': True,
-            'retries': 5,
-            'fragment_retries': 5,
-            'socket_timeout': 60,
-            'concurrent_fragment_downloads': 2,
-            'max_downloads': 2,
-            'http_chunk_size': 10485760,
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
-            'progress_hooks': [
-                lambda d: logger.info(
-                    f"[Instagram] Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
-                ) if d['status'] == 'downloading' else logger.info(f"[Instagram] Download status: {d['status']}")
-            ],
-            'ignoreerrors': False,
-            'geo_bypass': True,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Range': 'bytes=0-',
-                'Cache-Control': 'no-cache',
-            },
+    if is_youtube_clip:
+        # For YouTube clips, start background download and return immediately
+        logger.info(f"Starting background download for YouTube clip: {request.url}")
+        background_tasks.add_task(download_youtube_clip_background, request, download_id, output_template)
+        return {
+            "success": True,
+            "message": "Download started in background",
+            "download_id": download_id,
+            "url": request.url,
+            "status": "processing",
+            "check_url": f"/status/{download_id}"
         }
-        # Use cookies if available
-        if os.path.exists(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-            logger.info(f"Using Instagram cookies from {cookies_path}")
-        else:
-            logger.warning("No cookies.txt found for Instagram. Some videos may require login.")
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=True)
-                if not info:
-                    raise Exception("Failed to extract Instagram video information")
-            time.sleep(2)
-            downloaded_file = find_downloaded_file(download_id)
-            if not downloaded_file:
-                raise Exception("Downloaded file not found for Instagram video")
-            video_info = get_video_info(downloaded_file)
-            logger.info(f"Instagram download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
-            return {
-                "success": True,
-                "file_path": os.path.basename(downloaded_file),
-                "download_url": f"/files/{os.path.basename(downloaded_file)}",
-                "title": info.get('title', 'Instagram Video') if info else 'Instagram Video',
-                "url": request.url,
-                "description": info.get('description', '') if info else '',
-                "tags": info.get('tags', []) if info else [],
-                "duration": info.get('duration') if info else None,
-                "uploader": info.get('uploader') if info else None,
-                "file_size_bytes": os.path.getsize(downloaded_file),
-                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-                "video_info": video_info,
-                "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
-            }
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e)
-            logger.error(f"[Instagram] yt-dlp download error: {error_msg}")
-            cleanup_files(download_id)
-            return {
-                "success": False,
-                "error": f"Instagram download failed: {error_msg}",
-                "error_type": "download_error"
-            }
-        except Exception as e:
-            logger.error(f"[Instagram] Download failed with exception: {str(e)}")
-            cleanup_files(download_id)
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": "general_error"
-            }
-    
+
     # For non-clip content, proceed with synchronous download
     try:
         logger.info(f"Starting download for URL: {request.url}")
-        
+
         # Determine format string based on request parameters
+        preferred_format = None
         if request.audio_only:
-            format_string = 'bestaudio[ext=m4a]/bestaudio/best'
+            preferred_format = 'bestaudio[ext=m4a]/bestaudio/best'
         else:
-            # Build format string prioritizing quality and aspect ratio
+            # Use your previous preferred format string for non-shorts
             max_height = request.max_height if request.max_height > 0 else 1080
-            
-            # Format selection that handles vertical videos and maintains quality
             format_parts = [
-                # First priority: Best quality single-stream formats
-                f'bestvideo[height>={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>={max_height}]',  # Best quality at target resolution
-                f'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=1080]',  # Best 1080p
-                f'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=720]',   # Best 720p+
-                
-                # Second priority: YouTube-specific formats
-                '22/18',  # YouTube formats 22 (720p) and 18 (360p)
-                
-                # Third priority: Any MP4 with audio
+                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}][acodec~="^mp4a"]',
+                f'best[ext=mp4][vcodec*=avc1][height>={max_height}][acodec*=mp4a]',
+                f'best[ext=mp4][vcodec~="^avc1"][height>=1080][acodec~="^mp4a"]',
+                f'best[ext=mp4][vcodec*=avc1][height>=1080][acodec*=mp4a]',
+                f'best[ext=mp4][vcodec~="^avc1"][height>=720][acodec~="^mp4a"]',
+                f'best[ext=mp4][vcodec*=avc1][height>=720][acodec*=mp4a]',
+                f'bestvideo[height>={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>={max_height}]',
+                f'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=1080]',
+                f'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=720]',
+                f'best[ext=mp4][vcodec~="^avc1"][height>={max_height}]',
+                f'best[ext=mp4][vcodec*=avc1][height>={max_height}]',
+                f'best[ext=mp4][vcodec~="^avc1"][height>=1080]',
+                f'best[ext=mp4][vcodec*=avc1][height>=1080]',
+                f'best[ext=mp4][vcodec~="^avc1"][height>=720]',
+                f'best[ext=mp4][vcodec*=avc1][height>=720]',
+                '22/18',
+                '22',
                 f'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                
-                # Fourth priority: Any video with audio
+                f'best[ext=mp4][vcodec~="^avc1"]',
+                f'best[ext=mp4][vcodec*=avc1]',
+                '137+140/137',
+                '136+140/136',
+                '135+140/135',
+                '18',
+                f'best[ext=mp4]',
+                'best',
                 'bestvideo+bestaudio/best'
             ]
-            
-            format_string = '/'.join(format_parts)
-        
-        # Enhanced ydl_opts for iOS compatibility with quality priority + minimal post-processing
-        ydl_opts = {
-            'format': format_string,
-            'outtmpl': output_template,
-            'restrictfilenames': True,
-            'writesubtitles': request.subtitles,
-            'writeautomaticsub': request.subtitles,
-            'subtitleslangs': ['en', 'en-US'] if request.subtitles else [],
-            
-            # Remove all post-processing to preserve original aspect ratio
-            'postprocessors': [] if not request.audio_only else [
-                {
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'm4a',
-                    'preferredquality': '192',
-                }
-            ],
-            
-            # Enhanced post-processing for better quality and aspect ratio handling
-            'postprocessor_args': [
-                '-avoid_negative_ts', 'make_zero',  # Fix timing issues
-                '-movflags', '+faststart',          # iOS optimization
-                '-vf', 'scale=-1:1080',             # Scale to 1080p height while maintaining aspect ratio
-                '-c:v', 'libx264',                 # Use H.264 codec
-                '-crf', '18',                      # High quality (lower is better)
-                '-preset', 'medium',               # Good balance of speed and quality
-                '-c:a', 'aac',                     # Use AAC audio
-                '-b:a', '192k',                    # Audio bitrate
-                '-strict', 'experimental',         # Allow experimental features
-                '-y'                              # Overwrite output files
-            ] if not request.audio_only else [],
-            
-            # Enhanced network and retry settings for better performance
-            'retries': 5,
-            'fragment_retries': 5,
-            'socket_timeout': 60,
-            'concurrent_fragment_downloads': 4,  # Increased parallel downloads
-            'max_downloads': 4,  # Allow multiple downloads at once
-            'http_chunk_size': 10485760,  # 10MB chunks for better performance
-            
-            # Optimized headers for better compatibility
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Range': 'bytes=0-',  # Support for partial downloads
-                'Cache-Control': 'no-cache',
-            },
-            
-            # Extraction settings
-            'extract_flat': False,
-            'ignoreerrors': True,
-            'geo_bypass': True,
-            'nocheckcertificate': True,
-            
-            # Progress and logging
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
-            'progress_hooks': [
-                lambda d: logger.info(
-                    f"Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
-                ) if d['status'] == 'downloading' else logger.info(f"Download status: {d['status']}")
-            ],
-        }
-        
-        # Regular download
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(request.url, download=True)
-            if not info:
-                raise Exception("Failed to extract video information")
+            preferred_format = '/'.join(format_parts)
+
+        # For YouTube Shorts, use fallback logic with no preferred format (let yt-dlp decide)
+        if 'youtube.com/shorts' in request.url or 'youtu.be/shorts' in request.url:
+            preferred_format = None
+
+        info = download_with_fallback(request.url, output_template, preferred_format, subtitles=request.subtitles, audio_only=request.audio_only)
+        if not info:
+            raise Exception("Failed to extract video information")
 
         # Wait for file system to catch up
         time.sleep(2)
 
         # Find the downloaded file
         downloaded_file = find_downloaded_file(download_id)
-        
         if not downloaded_file:
             raise Exception("Downloaded file not found")
 
         # Get video information
         video_info = get_video_info(downloaded_file)
-        
+
         # Log success
         logger.info(f"Download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
 
@@ -527,20 +450,11 @@ async def download_video(
             "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
         }
 
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        logger.error(f"yt-dlp download error: {error_msg}")
-        cleanup_files(download_id)
-        
-        return {
-            "success": False,
-            "error": f"Download failed: {error_msg}",
-            "error_type": "download_error"
-        }
     except Exception as e:
         logger.error(f"Download failed with exception: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         cleanup_files(download_id)
-        
         return {
             "success": False,
             "error": str(e),
