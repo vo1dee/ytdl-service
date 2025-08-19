@@ -61,6 +61,7 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 YTDLP_UPDATE_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
 CLEANUP_INTERVAL = 60 * 60  # 1 hour in seconds
 FILE_MAX_AGE = 24 * 60 * 60  # 24 hours in seconds
+
 last_update_check = 0
 last_update_status = None
 last_cleanup_time = 0
@@ -108,19 +109,15 @@ api_key_header = APIKeyHeader(name="X-API-Key")
 async def verify_api_key(api_key_header: str = Security(api_key_header)):
     if api_key_header != API_KEY:
         logger.warning(f"Invalid API key attempt")
-        raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="Invalid API key"
-        )
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid API key")
     return api_key_header
 
 class DownloadRequest(BaseModel):
     url: str
-    format: str = 'best[ext=mp4][vcodec*=avc1][height<=1080]/best[ext=mp4][height<=1080]/best[ext=mp4]/best'  # iOS-compatible H.264 default
-    
-    # Add additional optional parameters
+    format: str = 'best[ext=mp4]/best'
     subtitles: bool = False
     audio_only: bool = False
-    max_height: int = 1080  # Reduced default for better iOS compatibility
+    max_height: int = 1080
 
 def check_and_update_ytdlp():
     """Check if yt-dlp is up to date and update if necessary"""
@@ -147,7 +144,9 @@ def check_and_update_ytdlp():
             )
             logger.info("yt-dlp updated successfully")
             return True, latest_version
+        
         return False, current_version
+        
     except Exception as e:
         logger.error(f"Error checking/updating yt-dlp: {str(e)}")
         return False, current_version if 'current_version' in locals() else "unknown"
@@ -181,6 +180,7 @@ async def cleanup_old_files():
         
         logger.info(f"Cleanup completed: {deleted_count} files deleted, {round(saved_space/(1024*1024), 2)} MB saved")
         last_cleanup_time = current_time
+        
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
@@ -208,6 +208,7 @@ async def periodic_tasks():
             await cleanup_old_files()
             
             await asyncio.sleep(60)  # Check every minute
+            
         except Exception as e:
             logger.error(f"Error in periodic tasks: {str(e)}")
             await asyncio.sleep(300)  # Wait 5 minutes before retrying on error
@@ -221,14 +222,14 @@ async def health_check():
             ["which", "ffmpeg"],
             capture_output=True
         ).returncode == 0
-
+        
         # Check for required directory permissions
         write_permission = os.access(DOWNLOADS_DIR, os.W_OK)
         read_permission = os.access(DOWNLOADS_DIR, os.R_OK)
-
+        
         # Get current yt-dlp version without checking for updates
         current_version = yt_dlp.version.__version__
-
+        
         return {
             "status": "healthy",
             "ffmpeg_available": ffmpeg_available,
@@ -240,6 +241,7 @@ async def health_check():
             "downloads_dir_readable": read_permission,
             "timestamp": datetime.now().isoformat()
         }
+        
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
         return {
@@ -259,6 +261,7 @@ def get_video_info(file_path):
             '-show_streams',
             file_path
         ]
+        
         result = subprocess.run(ffprobe_cmd, capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -275,7 +278,6 @@ def get_video_info(file_path):
                 width = video_stream.get('width', 0)
                 height = video_stream.get('height', 0)
                 codec = video_stream.get('codec_name', 'unknown')
-                
                 logger.info(f"Video info: {width}x{height}, codec: {codec}")
                 return {
                     'width': width,
@@ -283,290 +285,19 @@ def get_video_info(file_path):
                     'codec': codec,
                     'quality_score': height if height else 0
                 }
-            
+                
     except Exception as e:
         logger.error(f"Error getting video info: {e}")
     
     return {'width': 0, 'height': 0, 'codec': 'unknown', 'quality_score': 0}
 
-
-@app.post("/download")
-async def download_video(
-    request: DownloadRequest,
-    background_tasks: BackgroundTasks,
-    api_key: str = Depends(verify_api_key)
-):
-    download_id = str(uuid.uuid4())[:8]
-    output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s')
-    
-    # Clean up any existing files with this ID
-    cleanup_files(download_id)
-
-    # Instagram detection
-    is_instagram = any(x in request.url for x in ["instagram.com/p/", "instagram.com/reel/", "instagram.com/tv/"])
-    cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
-
-    if is_instagram:
-        logger.info(f"Instagram download attempt: {request.url}")
-        ydl_opts = {
-            'format': request.format or 'bestvideo+bestaudio/best',
-            'outtmpl': output_template,
-            'restrictfilenames': True,
-            'retries': 5,
-            'fragment_retries': 5,
-            'socket_timeout': 60,
-            'concurrent_fragment_downloads': 2,
-            'max_downloads': 2,
-            'http_chunk_size': 10485760,
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
-            'progress_hooks': [
-                lambda d: logger.info(
-                    f"[Instagram] Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
-                ) if d['status'] == 'downloading' else logger.info(f"[Instagram] Download status: {d['status']}")
-            ],
-            'ignoreerrors': False,
-            'geo_bypass': True,
-            'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Range': 'bytes=0-',
-                'Cache-Control': 'no-cache',
-            },
-        }
-        # Use cookies if available
-        if os.path.exists(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-            logger.info(f"Using Instagram cookies from {cookies_path}")
-        else:
-            logger.warning("No cookies.txt found for Instagram. Some videos may require login.")
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(request.url, download=True)
-                if not info:
-                    raise Exception("Failed to extract Instagram video information")
-            time.sleep(2)
-            downloaded_file = find_downloaded_file(download_id)
-            if not downloaded_file:
-                raise Exception("Downloaded file not found for Instagram video")
-            video_info = get_video_info(downloaded_file)
-            logger.info(f"Instagram download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
-            return {
-                "success": True,
-                "file_path": os.path.basename(downloaded_file),
-                "download_url": f"/files/{os.path.basename(downloaded_file)}",
-                "title": info.get('title', 'Instagram Video') if info else 'Instagram Video',
-                "url": request.url,
-                "description": info.get('description', '') if info else '',
-                "tags": info.get('tags', []) if info else [],
-                "duration": info.get('duration') if info else None,
-                "uploader": info.get('uploader') if info else None,
-                "file_size_bytes": os.path.getsize(downloaded_file),
-                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-                "video_info": video_info,
-                "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
-            }
-        except yt_dlp.utils.DownloadError as e:
-            error_msg = str(e)
-            logger.error(f"[Instagram] yt-dlp download error: {error_msg}")
-            cleanup_files(download_id)
-            return {
-                "success": False,
-                "error": f"Instagram download failed: {error_msg}",
-                "error_type": "download_error"
-            }
-        except Exception as e:
-            logger.error(f"[Instagram] Download failed with exception: {str(e)}")
-            cleanup_files(download_id)
-            return {
-                "success": False,
-                "error": str(e),
-                "error_type": "general_error"
-            }
-    
-    # For non-clip content, proceed with synchronous download
-    try:
-        logger.info(f"Starting download for URL: {request.url}")
-        
-        # Determine format string based on request parameters
-        if request.audio_only:
-            format_string = 'bestaudio[ext=m4a]/bestaudio/best'
-        else:
-            # Build format string prioritizing quality and aspect ratio
-            max_height = request.max_height if request.max_height > 0 else 1080
-            
-            # Format selection that handles vertical videos and maintains quality
-            format_parts = [
-                # First priority: Best quality single-stream formats
-                f'bestvideo[height>={max_height}][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>={max_height}]',  # Best quality at target resolution
-                f'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=1080]',  # Best 1080p
-                f'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height>=720]',   # Best 720p+
-                
-                # Second priority: YouTube-specific formats
-                '22/18',  # YouTube formats 22 (720p) and 18 (360p)
-                
-                # Third priority: Any MP4 with audio
-                f'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-                
-                # Fourth priority: Any video with audio
-                'bestvideo+bestaudio/best'
-            ]
-            
-            format_string = '/'.join(format_parts)
-        
-        # Enhanced ydl_opts for iOS compatibility with quality priority + minimal post-processing
-        ydl_opts = {
-            'format': format_string,
-            'outtmpl': output_template,
-            'restrictfilenames': True,
-            'writesubtitles': request.subtitles,
-            'writeautomaticsub': request.subtitles,
-            'subtitleslangs': ['en', 'en-US'] if request.subtitles else [],
-            
-            # Remove all post-processing to preserve original aspect ratio
-            'postprocessors': [] if not request.audio_only else [
-                {
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'm4a',
-                    'preferredquality': '192',
-                }
-            ],
-            
-            # Enhanced post-processing for better quality and aspect ratio handling
-            'postprocessor_args': [
-                '-avoid_negative_ts', 'make_zero',  # Fix timing issues
-                '-movflags', '+faststart',          # iOS optimization
-                '-vf', 'scale=-1:1080',             # Scale to 1080p height while maintaining aspect ratio
-                '-c:v', 'libx264',                 # Use H.264 codec
-                '-crf', '18',                      # High quality (lower is better)
-                '-preset', 'medium',               # Good balance of speed and quality
-                '-c:a', 'aac',                     # Use AAC audio
-                '-b:a', '192k',                    # Audio bitrate
-                '-strict', 'experimental',         # Allow experimental features
-                '-y'                              # Overwrite output files
-            ] if not request.audio_only else [],
-            
-            # Enhanced network and retry settings for better performance
-            'retries': 5,
-            'fragment_retries': 5,
-            'socket_timeout': 60,
-            'concurrent_fragment_downloads': 4,  # Increased parallel downloads
-            'max_downloads': 4,  # Allow multiple downloads at once
-            'http_chunk_size': 10485760,  # 10MB chunks for better performance
-            
-            # Optimized headers for better compatibility
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Range': 'bytes=0-',  # Support for partial downloads
-                'Cache-Control': 'no-cache',
-            },
-            
-            # Extraction settings
-            'extract_flat': False,
-            'ignoreerrors': True,
-            'geo_bypass': True,
-            'nocheckcertificate': True,
-            
-            # Progress and logging
-            'quiet': False,
-            'no_warnings': False,
-            'verbose': True,
-            'progress_hooks': [
-                lambda d: logger.info(
-                    f"Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}"
-                ) if d['status'] == 'downloading' else logger.info(f"Download status: {d['status']}")
-            ],
-        }
-        
-        # Regular download
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(request.url, download=True)
-            if not info:
-                raise Exception("Failed to extract video information")
-
-        # Wait for file system to catch up
-        time.sleep(2)
-
-        # Find the downloaded file
-        downloaded_file = find_downloaded_file(download_id)
-        
-        if not downloaded_file:
-            raise Exception("Downloaded file not found")
-
-        # Get video information
-        video_info = get_video_info(downloaded_file)
-        
-        # Log success
-        logger.info(f"Download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
-
-        # Return success response
-        return {
-            "success": True,
-            "file_path": os.path.basename(downloaded_file),
-            "download_url": f"/files/{os.path.basename(downloaded_file)}",
-            "title": info.get('title', 'Video') if info else 'Video',
-            "url": request.url,
-            "description": info.get('description', '') if info else '',
-            "tags": info.get('tags', []) if info else [],
-            "duration": info.get('duration') if info else None,
-            "uploader": info.get('uploader') if info else None,
-            "file_size_bytes": os.path.getsize(downloaded_file),
-            "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-            "video_info": video_info,
-            "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
-        }
-
-    except yt_dlp.utils.DownloadError as e:
-        error_msg = str(e)
-        logger.error(f"yt-dlp download error: {error_msg}")
-        cleanup_files(download_id)
-        
-        return {
-            "success": False,
-            "error": f"Download failed: {error_msg}",
-            "error_type": "download_error"
-        }
-    except Exception as e:
-        logger.error(f"Download failed with exception: {str(e)}")
-        cleanup_files(download_id)
-        
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": "general_error"
-        }
-
-
-# Additional helper function to check if URL is accessible
-def check_url_accessibility(url):
-    """Check if the URL is accessible before attempting download"""
-    try:
-        import requests
-        response = requests.head(url, timeout=10, allow_redirects=True)
-        return response.status_code == 200
-    except:
-        return False
-
-
-# Enhanced find_downloaded_file function with better error handling
 def find_downloaded_file(download_id):
     """Find the downloaded file with the given ID"""
     try:
         if not os.path.exists(DOWNLOADS_DIR):
             logger.error(f"Downloads directory doesn't exist: {DOWNLOADS_DIR}")
             return None
-            
+        
         files_in_dir = os.listdir(DOWNLOADS_DIR)
         logger.info(f"Looking for files with prefix '{download_id}' in {len(files_in_dir)} files")
         
@@ -602,7 +333,7 @@ def cleanup_files(prefix):
         if not os.path.exists(DOWNLOADS_DIR):
             logger.error(f"Downloads directory doesn't exist: {DOWNLOADS_DIR}")
             return
-
+        
         for item in os.listdir(DOWNLOADS_DIR):
             if item.startswith(prefix):
                 item_path = os.path.join(DOWNLOADS_DIR, item)
@@ -615,13 +346,354 @@ def cleanup_files(prefix):
                         logger.info(f"Cleaned up directory: {item}")
                 except Exception as e:
                     logger.warning(f"Failed to clean up item {item}: {e}")
+                    
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
+def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
+    """Enhanced YouTube download with working strategies"""
+    
+    # Detect YouTube Shorts, Clips, and regular videos
+    is_youtube_shorts = "youtube.com/shorts" in request.url
+    is_youtube_clips = "youtube.com/clip" in request.url
+    is_youtube = any(x in request.url for x in ["youtube.com", "youtu.be"])
+    
+    if not is_youtube:
+        return None  # Not YouTube, use regular download
+    
+    logger.info(f"🎬 YouTube download detected: {request.url}")
+    logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
+    
+    # Define working strategies based on bot testing
+    strategies = [
+        {
+            'name': 'Android client (proven working)',
+            'opts': {
+                'format': '18/22/best[ext=mp4]/best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 30,
+                'ignoreerrors': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'http_headers': {
+                    'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android']
+                    }
+                },
+                'postprocessors': []  # No post-processing for reliability
+            }
+        },
+        {
+            'name': 'iOS client fallback',
+            'opts': {
+                'format': 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/18/22/best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 30,
+                'ignoreerrors': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'http_headers': {
+                    'User-Agent': 'com.google.ios.youtube/17.36.4 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['ios']
+                    }
+                },
+                'postprocessors': []
+            }
+        },
+        {
+            'name': 'Web client with headers',
+            'opts': {
+                'format': '18/22/best[ext=mp4]/best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 2,
+                'fragment_retries': 2,
+                'socket_timeout': 30,
+                'ignoreerrors': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.youtube.com/'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web']
+                    }
+                },
+                'postprocessors': []
+            }
+        }
+    ]
+    
+    # Try each strategy
+    for i, strategy in enumerate(strategies, 1):
+        logger.info(f"📋 Trying YouTube strategy {i}/{len(strategies)}: {strategy['name']}")
+        
+        try:
+            with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
+                info = ydl.extract_info(request.url, download=True)
+                
+                if info:
+                    logger.info(f"✅ YouTube strategy '{strategy['name']}' succeeded!")
+                    
+                    # Wait for file system
+                    time.sleep(2)
+                    
+                    # Find downloaded file
+                    downloaded_file = find_downloaded_file(download_id)
+                    if downloaded_file:
+                        video_info = get_video_info(downloaded_file)
+                        logger.info(f"YouTube download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
+                        
+                        return {
+                            "success": True,
+                            "file_path": os.path.basename(downloaded_file),
+                            "download_url": f"/files/{os.path.basename(downloaded_file)}",
+                            "title": info.get('title', 'YouTube Video'),
+                            "url": request.url,
+                            "description": info.get('description', ''),
+                            "tags": info.get('tags', []),
+                            "duration": info.get('duration'),
+                            "uploader": info.get('uploader'),
+                            "file_size_bytes": os.path.getsize(downloaded_file),
+                            "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                            "video_info": video_info,
+                            "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only",
+                            "strategy_used": strategy['name']
+                        }
+                    else:
+                        logger.error(f"Downloaded file not found for strategy: {strategy['name']}")
+                        
+        except yt_dlp.utils.DownloadError as e:
+            logger.warning(f"❌ YouTube strategy '{strategy['name']}' failed: {str(e)}")
+            cleanup_files(download_id)
+        except Exception as e:
+            logger.error(f"❌ YouTube strategy '{strategy['name']}' error: {str(e)}")
+            cleanup_files(download_id)
+    
+    # All strategies failed
+    logger.error(f"❌ All YouTube strategies failed for: {request.url}")
+    return {
+        "success": False,
+        "error": "All YouTube strategies failed",
+        "error_type": "youtube_extraction_failed"
+    }
+
+@app.post("/download")
+async def download_video(request: DownloadRequest,
+                        background_tasks: BackgroundTasks,
+                        api_key: str = Depends(verify_api_key)):
+    
+    download_id = str(uuid.uuid4())[:8]
+    output_template = os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s')
+    
+    # Clean up any existing files with this ID
+    cleanup_files(download_id)
+    
+    # Check if it's YouTube and use specialized handler
+    is_youtube = any(x in request.url for x in ["youtube.com", "youtu.be"])
+    
+    if is_youtube:
+        logger.info(f"🎯 YouTube URL detected, using specialized handler: {request.url}")
+        result = download_youtube_video(request, download_id, output_template)
+        if result:
+            return result
+        # If YouTube handler fails, fall through to regular handler
+        logger.warning("YouTube handler failed, trying regular handler")
+    
+    # Instagram detection
+    is_instagram = any(x in request.url for x in ["instagram.com/p/", "instagram.com/reel/", "instagram.com/tv/"])
+    
+    if is_instagram:
+        logger.info(f"📸 Instagram download attempt: {request.url}")
+        
+        cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+        
+        ydl_opts = {
+            'format': request.format or 'bestvideo+bestaudio/best',
+            'outtmpl': output_template,
+            'restrictfilenames': True,
+            'retries': 5,
+            'fragment_retries': 5,
+            'socket_timeout': 60,
+            'concurrent_fragment_downloads': 2,
+            'max_downloads': 2,
+            'http_chunk_size': 10485760,
+            'quiet': False,
+            'no_warnings': False,
+            'verbose': True,
+            'progress_hooks': [
+                lambda d: logger.info(f"[Instagram] Download progress: {d.get('_percent_str', 'N/A')} - {d.get('filename', 'N/A')}") 
+                if d['status'] == 'downloading' 
+                else logger.info(f"[Instagram] Download status: {d['status']}")
+            ],
+            'ignoreerrors': False,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Range': 'bytes=0-',
+                'Cache-Control': 'no-cache',
+            },
+        }
+        
+        # Use cookies if available
+        if os.path.exists(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+            logger.info(f"Using Instagram cookies from {cookies_path}")
+        else:
+            logger.warning("No cookies.txt found for Instagram. Some videos may require login.")
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(request.url, download=True)
+                
+                if not info:
+                    raise Exception("Failed to extract Instagram video information")
+                
+                time.sleep(2)
+                downloaded_file = find_downloaded_file(download_id)
+                
+                if not downloaded_file:
+                    raise Exception("Downloaded file not found for Instagram video")
+                
+                video_info = get_video_info(downloaded_file)
+                logger.info(f"Instagram download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
+                
+                return {
+                    "success": True,
+                    "file_path": os.path.basename(downloaded_file),
+                    "download_url": f"/files/{os.path.basename(downloaded_file)}",
+                    "title": info.get('title', 'Instagram Video') if info else 'Instagram Video',
+                    "url": request.url,
+                    "description": info.get('description', '') if info else '',
+                    "tags": info.get('tags', []) if info else [],
+                    "duration": info.get('duration') if info else None,
+                    "uploader": info.get('uploader') if info else None,
+                    "file_size_bytes": os.path.getsize(downloaded_file),
+                    "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                    "video_info": video_info,
+                    "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
+                }
+                
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e)
+            logger.error(f"[Instagram] yt-dlp download error: {error_msg}")
+            cleanup_files(download_id)
+            return {
+                "success": False,
+                "error": f"Instagram download failed: {error_msg}",
+                "error_type": "download_error"
+            }
+        except Exception as e:
+            logger.error(f"[Instagram] Download failed with exception: {str(e)}")
+            cleanup_files(download_id)
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": "general_error"
+            }
+    
+    # For other platforms, use simplified approach
+    try:
+        logger.info(f"🌐 Starting regular download for URL: {request.url}")
+        
+        # Simplified format for non-YouTube platforms
+        format_string = request.format or 'best[ext=mp4]/best'
+        
+        ydl_opts = {
+            'format': format_string,
+            'outtmpl': output_template,
+            'restrictfilenames': True,
+            'retries': 3,
+            'fragment_retries': 3,
+            'socket_timeout': 60,
+            'ignoreerrors': True,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'quiet': False,
+            'no_warnings': False,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            'postprocessors': []  # Minimal post-processing
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(request.url, download=True)
+            
+            if not info:
+                raise Exception("Failed to extract video information")
+            
+            time.sleep(2)
+            downloaded_file = find_downloaded_file(download_id)
+            
+            if not downloaded_file:
+                raise Exception("Downloaded file not found")
+            
+            video_info = get_video_info(downloaded_file)
+            logger.info(f"Regular download successful: {os.path.basename(downloaded_file)}")
+            
+            return {
+                "success": True,
+                "file_path": os.path.basename(downloaded_file),
+                "download_url": f"/files/{os.path.basename(downloaded_file)}",
+                "title": info.get('title', 'Video'),
+                "url": request.url,
+                "description": info.get('description', ''),
+                "tags": info.get('tags', []),
+                "duration": info.get('duration'),
+                "uploader": info.get('uploader'),
+                "file_size_bytes": os.path.getsize(downloaded_file),
+                "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                "video_info": video_info,
+                "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only"
+            }
+            
+    except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        logger.error(f"yt-dlp download error: {error_msg}")
+        cleanup_files(download_id)
+        return {
+            "success": False,
+            "error": f"Download failed: {error_msg}",
+            "error_type": "download_error"
+        }
+    except Exception as e:
+        logger.error(f"Download failed with exception: {str(e)}")
+        cleanup_files(download_id)
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": "general_error"
+        }
+
 @app.get("/files")
-async def list_files(
-    api_key: str = Depends(verify_api_key)
-):
+async def list_files(api_key: str = Depends(verify_api_key)):
     """List available downloaded files"""
     try:
         files = []
@@ -651,26 +723,26 @@ async def list_files(
             "file_count": len(files),
             "timestamp": datetime.now().isoformat()
         }
+        
     except Exception as e:
         logger.error(f"Error listing files: {str(e)}")
         return {"error": str(e)}
 
 @app.get("/files/{filename}")
-async def get_file(
-    filename: str,
-    api_key: str = Depends(verify_api_key)
-):
+async def get_file(filename: str, api_key: str = Depends(verify_api_key)):
     # Basic sanitization to prevent directory traversal
     if "/" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-
+    
     file_path = os.path.join(DOWNLOADS_DIR, filename)
+    
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
-
+    
     # Determine media type based on file extension
     ext = os.path.splitext(filename)[1].lower()
     media_type = 'application/octet-stream'  # Default
+    
     if ext == '.mp4':
         media_type = 'video/mp4'
     elif ext == '.webm':
@@ -685,7 +757,7 @@ async def get_file(
         media_type = 'image/jpeg'
     elif ext == '.png':
         media_type = 'image/png'
-
+    
     return FileResponse(
         file_path,
         media_type=media_type,
@@ -693,9 +765,7 @@ async def get_file(
     )
 
 @app.get("/cleanup")
-async def cleanup_storage(
-    api_key: str = Depends(verify_api_key)
-):
+async def cleanup_storage(api_key: str = Depends(verify_api_key)):
     """Clean up old files to free storage space"""
     await cleanup_old_files()
     
@@ -704,7 +774,7 @@ async def cleanup_storage(
         total_size = 0
         file_count = 0
         files = []
-
+        
         for filename in os.listdir(DOWNLOADS_DIR):
             file_path = os.path.join(DOWNLOADS_DIR, filename)
             if os.path.isfile(file_path):
@@ -713,7 +783,6 @@ async def cleanup_storage(
                     modified = os.path.getmtime(file_path)
                     total_size += size
                     file_count += 1
-
                     files.append({
                         "filename": filename,
                         "size_bytes": size,
@@ -724,10 +793,10 @@ async def cleanup_storage(
                     })
                 except Exception as e:
                     logger.error(f"Error processing file {filename}: {str(e)}")
-
+        
         # Sort files by modification time, newest first
         files.sort(key=lambda x: x['modified_timestamp'], reverse=True)
-
+        
         return {
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 2),
@@ -735,20 +804,19 @@ async def cleanup_storage(
             "files": files,
             "timestamp": datetime.now().isoformat()
         }
+        
     except Exception as e:
         logger.error(f"Storage info error: {str(e)}")
         return {"error": str(e)}
 
 @app.get("/storage")
-async def get_storage_info(
-    api_key: str = Depends(verify_api_key)
-):
+async def get_storage_info(api_key: str = Depends(verify_api_key)):
     """Get storage usage information"""
     try:
         total_size = 0
         file_count = 0
         files = []
-
+        
         for filename in os.listdir(DOWNLOADS_DIR):
             file_path = os.path.join(DOWNLOADS_DIR, filename)
             if os.path.isfile(file_path):
@@ -757,7 +825,6 @@ async def get_storage_info(
                     modified = os.path.getmtime(file_path)
                     total_size += size
                     file_count += 1
-
                     files.append({
                         "filename": filename,
                         "size_bytes": size,
@@ -767,10 +834,10 @@ async def get_storage_info(
                     })
                 except Exception as e:
                     logger.error(f"Error processing file {filename}: {str(e)}")
-
+        
         # Sort files by modification time, newest first
         files.sort(key=lambda x: x['modified_timestamp'], reverse=True)
-
+        
         return {
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 2),
@@ -778,16 +845,13 @@ async def get_storage_info(
             "files": files,
             "timestamp": datetime.now().isoformat()
         }
+        
     except Exception as e:
         logger.error(f"Storage info error: {str(e)}")
         return {"error": str(e)}
 
-# Utility endpoints
 @app.get("/formats")
-async def get_available_formats(
-    url: str,
-    api_key: str = Depends(verify_api_key)
-):
+async def get_available_formats(url: str, api_key: str = Depends(verify_api_key)):
     """Get available formats for a URL without downloading"""
     try:
         ydl_opts = {
@@ -821,6 +885,7 @@ async def get_available_formats(
                 "uploader": info.get('uploader'),
                 "formats": formats
             }
+            
     except Exception as e:
         logger.error(f"Error getting formats: {str(e)}")
         return {"error": str(e)}
@@ -828,212 +893,8 @@ async def get_available_formats(
 # Store download statuses in memory (in production, use Redis or database)
 download_statuses = {}
 
-async def download_youtube_clip_background(request: DownloadRequest, download_id: str, output_template: str):
-    """Background task for downloading YouTube clips"""
-    download_statuses[download_id] = {
-        "status": "processing",
-        "progress": 0,
-        "url": request.url,
-        "started_at": datetime.now().isoformat()
-    }
-    
-    try:
-        logger.info(f"Background download started for: {request.url}")
-        
-        # Step 1: Try to list available formats first
-        list_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'listformats': True,
-            'extract_flat': False,
-            'force_generic_extractor': False,
-            'geo_bypass': True,
-            'nocheckcertificate': True,
-        }
-        
-        try:
-            logger.info("Listing available formats...")
-            with yt_dlp.YoutubeDL(list_opts) as ydl:
-                info = ydl.extract_info(request.url, download=False)
-                if info and 'formats' in info:
-                    available_formats = [f.get('format_id') for f in info['formats'] if f.get('format_id')]
-                    logger.info(f"Available formats: {available_formats}")
-                else:
-                    logger.warning("No format information available")
-        except Exception as e:
-            logger.warning(f"Failed to list formats: {str(e)}")
-        
-        download_statuses[download_id]["status"] = "downloading"
-        download_statuses[download_id]["progress"] = 25
-        
-        # Step 2: Try multiple download strategies with quality priority + iOS conversion
-        strategies = [
-            # Strategy 1: High-resolution H.264 formats (preferred for iOS)
-            {
-                'name': 'High-res H.264 formats',
-                'opts': {
-                    'format': '270+234/232+234/231+234/230+234/229+234',  # 1080p/720p/480p/360p/240p H.264 + audio
-                    'outtmpl': output_template,
-                    'restrictfilenames': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'ignoreerrors': False,
-                    'retries': 2,
-                    'extract_flat': False,
-                    'geo_bypass': True,
-                    'nocheckcertificate': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
-                    }],
-                }
-            },
-            # Strategy 2: High-resolution VP9 formats (fallback)
-            {
-                'name': 'High-res VP9 formats',
-                'opts': {
-                    'format': '614+234/609+234/605+234/604+234/602+234',  # 1080p/720p/360p/240p/144p VP9 + audio
-                    'outtmpl': output_template,
-                    'restrictfilenames': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'ignoreerrors': False,
-                    'retries': 2,
-                    'extract_flat': False,
-                    'geo_bypass': True,
-                    'nocheckcertificate': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
-                    }],
-                }
-            },
-            # Strategy 3: Any H.264 format
-            {
-                'name': 'Any H.264 format',
-                'opts': {
-                    'format': 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/best',
-                    'outtmpl': output_template,
-                    'restrictfilenames': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'ignoreerrors': False,
-                    'retries': 2,
-                    'extract_flat': False,
-                    'geo_bypass': True,
-                    'nocheckcertificate': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
-                    }],
-                }
-            },
-            # Strategy 4: Fallback to any format
-            {
-                'name': 'Any format fallback',
-                'opts': {
-                    'format': 'best',
-                    'outtmpl': output_template,
-                    'restrictfilenames': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'ignoreerrors': False,
-                    'retries': 1,
-                    'geo_bypass': True,
-                    'nocheckcertificate': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
-                    }],
-                }
-            }
-        ]
-        
-        last_error = None
-        successful_info = None
-        for strategy in strategies:
-            try:
-                logger.info(f"Trying strategy: {strategy['name']}")
-                download_statuses[download_id]["progress"] = 50
-                
-                with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
-                    info = ydl.extract_info(request.url, download=True)
-                    if info:
-                        logger.info(f"Success with strategy: {strategy['name']}")
-                        successful_info = info
-                        break
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Strategy '{strategy['name']}' failed: {str(e)}")
-                cleanup_files(download_id)
-                continue
-        else:
-            # All strategies failed
-            error_msg = f"All YouTube clip strategies failed. Last error: {last_error}"
-            logger.error(error_msg)
-            download_statuses[download_id] = {
-                "status": "failed",
-                "error": error_msg,
-                "completed_at": datetime.now().isoformat()
-            }
-            return
-        
-        download_statuses[download_id]["progress"] = 80
-        
-        # Wait for file system to catch up
-        time.sleep(2)
-
-        # Find the downloaded file
-        downloaded_file = find_downloaded_file(download_id)
-        
-        if not downloaded_file:
-            error_msg = "Downloaded file not found"
-            download_statuses[download_id] = {
-                "status": "failed",
-                "error": error_msg,
-                "completed_at": datetime.now().isoformat()
-            }
-            return
-
-        # Get video information
-        video_info = get_video_info(downloaded_file)
-        
-        # Log success
-        logger.info(f"Background download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
-
-        # Update status to completed
-        download_statuses[download_id] = {
-            "status": "completed",
-            "progress": 100,
-            "file_path": os.path.basename(downloaded_file),
-            "download_url": f"/files/{os.path.basename(downloaded_file)}",
-            "title": successful_info.get('title', 'Video') if successful_info else 'Video',
-            "url": request.url,
-            "description": successful_info.get('description', '') if successful_info else '',
-            "tags": successful_info.get('tags', []) if successful_info else [],
-            "duration": successful_info.get('duration') if successful_info else None,
-            "uploader": successful_info.get('uploader') if successful_info else None,
-            "file_size_bytes": os.path.getsize(downloaded_file),
-            "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-            "video_info": video_info,
-            "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only",
-            "completed_at": datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Background download failed: {str(e)}")
-        cleanup_files(download_id)
-        download_statuses[download_id] = {
-            "status": "failed",
-            "error": str(e),
-            "completed_at": datetime.now().isoformat()
-        }
-
 @app.get("/status/{download_id}")
-async def get_download_status(
-    download_id: str,
-    api_key: str = Depends(verify_api_key)
-):
+async def get_download_status(download_id: str, api_key: str = Depends(verify_api_key)):
     """Get the status of a background download"""
     if download_id not in download_statuses:
         raise HTTPException(status_code=404, detail="Download not found")
@@ -1041,9 +902,7 @@ async def get_download_status(
     return download_statuses[download_id]
 
 @app.get("/downloads")
-async def list_downloads(
-    api_key: str = Depends(verify_api_key)
-):
+async def list_downloads(api_key: str = Depends(verify_api_key)):
     """List all current download statuses"""
     return {
         "downloads": download_statuses,
