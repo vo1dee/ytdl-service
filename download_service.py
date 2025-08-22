@@ -372,6 +372,17 @@ def get_clip_formats():
         'best[height>=1080]/best',
         'best'
     ]
+    
+    return format_string
+
+def download_progress_hook(d):
+    if d['status'] == 'downloading':
+        progress = d.get('_percent_str', '0%').strip()
+        speed = d.get('_speed_str', 'N/A')
+        eta = d.get('_eta_str', 'N/A')
+        logger.info(f"Download progress: {progress} at {speed} - ETA: {eta}")
+    elif d['status'] == 'finished':
+        logger.info("Download complete - Merging formats...")
 
 def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
     """Enhanced YouTube download with working strategies - FIXED VERSION"""
@@ -391,18 +402,16 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     if is_youtube_clips:
         logger.info("Using explicit format selection for YouTube clips")
         # Explicit format selection with fallbacks
-        clip_format = (
+        clip_format = '\n'.join([
             # First try: Known good format IDs from the logs
             '313/315/308/315/303/299/298/266/264/137/136/135/134/133/160/278/242/395/394/18/22/36/43/17/5',
             # Fallback to best available
-            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/',
-            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/',
-            'best[height>=720][ext=mp4]/',
-            'best[height>=720][ext=webm]/',
-            'best[ext=mp4]/',
-            'best[ext=webm]/',
+            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestaudio',
+            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/bestaudio',
+            'best[height>=720][ext=mp4]/best[height>=720][ext=webm]',
+            'best[ext=mp4]/best[ext=webm]',
             'best'
-        )
+        ])
     else:
         clip_format = None
     
@@ -421,6 +430,24 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'retries': 3,
                 'fragment_retries': 5,
                 'socket_timeout': 30,
+                'extract_flat': False,
+                'noprogress': False,
+                'nopart': True,  # Don't use .part files
+                'noresizebuffer': True,
+                'buffersize': 1024 * 1024,  # 1MB buffer
+                'http_chunk_size': 1048576,  # 1MB chunks
+                'concurrent_fragment_downloads': 4,  # Parallel downloads
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Referer': 'https://www.youtube.com/'
+                },
+                'extractor_retries': 3,
+                'fragment_retry_sleep': 1,
                 'ignoreerrors': False,
                 'geo_bypass': True,
                 'nocheckcertificate': True,
@@ -428,12 +455,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'no_warnings': False,
                 'merge_output_format': 'mp4',
                 'prefer_ffmpeg': True,  # Important for merging
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://www.youtube.com/'
-                },
+                'progress_hooks': [download_progress_hook],
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['web', 'android'],  # Try both web and android clients
