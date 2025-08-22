@@ -352,38 +352,30 @@ def cleanup_files(prefix):
 
 def get_clip_formats():
     """Get format selection specifically optimized for YouTube clips"""
-    # First get available formats to determine what's actually available
-    try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-            info = ydl.extract_info(request.url, download=False)
-            if 'formats' in info:
-                # Find all video formats, sort by resolution and codec
-                video_formats = [
-                    f for f in info['formats'] 
-                    if f.get('vcodec') != 'none' and f.get('height')
-                ]
-                video_formats.sort(key=lambda x: (
-                    x.get('height', 0),
-                    x.get('width', 0),
-                    x.get('fps', 0),
-                    x.get('vcodec', '').startswith('vp9')  # Prefer VP9
-                ), reverse=True)
-                
-                if video_formats:
-                    best_format = video_formats[0]
-                    format_id = best_format['format_id']
-                    logger.info(f"Selected best format: {format_id} ({best_format.get('width')}x{best_format.get('height')}@{best_format.get('fps', '?')}fps) {best_format.get('vcodec', '').split('.')[0]}")
-                    return [f'{format_id}+bestaudio[ext=m4a]']
-    
-    except Exception as e:
-        logger.warning(f"Could not determine best format, using fallback: {e}")
-    
-    # Fallback formats if we couldn't determine the best one
-    return [
-        'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
-        'bestvideo+bestaudio[ext=m4a]/best',
+    # Try explicit format IDs first based on the logs
+    explicit_formats = [
+        # 2560x1440 formats
+        '308+bestaudio[ext=m4a]',  # 2560x1440@60fps vp9
+        '623+bestaudio[ext=m4a]',  # 2560x1440@60fps vp09
+        '400+bestaudio[ext=m4a]',  # 2560x1440@60fps av01
+        
+        # 1920x1080 formats
+        '299+bestaudio[ext=m4a]',  # 1920x1080@60fps avc1
+        '303+bestaudio[ext=m4a]',  # 1920x1080@60fps vp9
+        '312+bestaudio[ext=m4a]',  # 1920x1080@60fps avc1
+        '617+bestaudio[ext=m4a]',  # 1920x1080@60fps vp09
+        '399+bestaudio[ext=m4a]',  # 1920x1080@60fps av01
+        
+        # Fallback to best available
+        'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]',
+        'bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]',
+        'best[ext=mp4]',
         'best'
     ]
+    
+    # Log the format selection
+    logger.info(f"Using explicit format selection for clip")
+    return explicit_formats
 
 def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
     """Enhanced YouTube download with working strategies"""
