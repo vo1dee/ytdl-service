@@ -389,19 +389,35 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     
     # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        # Prioritize highest quality available, starting with 1440p/1080p, including VP9/AV1 codecs
-        clip_format = 'bestvideo[height<=1440][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height<=1440][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height=1080][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/' \
-                     'bestvideo[height<=1440]+bestaudio/best[height<=1440]/' \
-                     'bestvideo[height=1080]+bestaudio/best[height=1080]/best'
-        logger.info(f"Using high-quality format selection for clip (prioritizing 1440p/1080p)")
+        # Fixed format selection for clips - properly handle DASH streams
+        clip_format = (
+            # First priority: High-quality AVC1 (H.264) video + best audio
+            'bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=1440][vcodec^=avc1]+bestaudio[ext=m4a]/'
+            
+            # Second priority: High-quality VP9 video + best audio  
+            'bestvideo[height<=1440][vcodec^=vp9][ext=webm]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=1440][vcodec^=vp9]+bestaudio[ext=m4a]/'
+            
+            # Third priority: Any high-quality video + audio
+            'bestvideo[height<=1440]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=1440]+bestaudio/'
+            
+            # 1080p fallbacks
+            'bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/'
+            'bestvideo[height=1080][vcodec^=vp9]+bestaudio[ext=m4a]/'
+            'bestvideo[height=1080]+bestaudio/'
+            
+            # 720p fallbacks
+            'bestvideo[height=720][vcodec^=avc1]+bestaudio[ext=m4a]/'
+            'bestvideo[height=720]+bestaudio/'
+            
+            # Final fallback to any quality
+            'bestvideo+bestaudio/best[height<=1440]/best'
+        )
         
-        # Force format selection to ensure we don't get a default low-res format
-        ytdl_format_force = True
+        logger.info(f"Using optimized format selection for clip (targeting 1440p/1080p)")
+        
         # Add additional headers specifically for clips
         clip_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -411,6 +427,18 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             'Origin': 'https://www.youtube.com',
             'DNT': '1',
         }
+        
+        # Update ydl_opts for proper merging
+        if 'opts' in locals():
+            ydl_opts = strategy['opts'].copy()
+            ydl_opts.update({
+                'format': clip_format,
+                'merge_output_format': 'mp4',  # Ensure final output is MP4
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }] if not ydl_opts.get('postprocessors') else ydl_opts['postprocessors']
+            })
     else:
         clip_format = None
         clip_headers = {}
@@ -544,11 +572,13 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     'file_access_retries': 10,
                     'extractor_args': {
                         'youtube': {
-                            'skip': ['dash', 'hls'],
+                            'skip': ['hls'],  # Enable DASH formats
                             'player_client': ['web', 'android'],
-                            'player_skip': ['configs', 'webpage']
+                            'player_skip': ['configs', 'webpage'],
+                            'format': 'bestvideo[height<=1440][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/bestvideo[height=1080]+bestaudio/best[height=1080]/best'
                         }
                     },
+                    'merge_output_format': 'mp4',  # Ensure MP4 output
                     'nocheckcertificate': True,
                     'extract_flat': False,
                     'force_generic_extractor': False
