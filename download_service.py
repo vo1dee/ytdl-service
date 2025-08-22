@@ -387,32 +387,31 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for clips - Optimized for high quality with merging
+    # Special handling for clips - Simple and reliable format selection
     if is_youtube_clips:
-        logger.info("Using optimized format selection for clip (targeting 1080p/1440p with proper merging)")
+        logger.info("Using reliable format selection for clips")
+        # Simple format selection that works with YouTube's DASH streams
         clip_format = (
-            # First try: 1440p with AVC1 (H.264) + AAC audio
-            'bestvideo[height<=1440][vcodec^=avc1][fps<=60]+bestaudio[acodec^=mp4a]/'
-            # Second try: 1440p with VP9 + Opus
-            'bestvideo[height<=1440][vcodec^=vp9][fps<=60]+bestaudio[acodec^=opus]/'
-            # Third try: 1080p with AVC1 + AAC
-            'bestvideo[height<=1080][vcodec^=avc1][fps<=60]+bestaudio[acodec^=mp4a]/'
-            # Fourth try: 1080p with VP9 + Opus
-            'bestvideo[height<=1080][vcodec^=vp9][fps<=60]+bestaudio[acodec^=opus]/'
-            # Fallback to any 1080p or lower with audio
-            'bestvideo[height<=1080]+bestaudio/'
-            # Last resort: single format fallback (prefer 720p or higher)
-            'best[height>=720][ext=mp4]/best[height>=720]/best[ext=mp4]/best'
+            # First try: Best available format with separate video+audio
+            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/'
+            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/'
+            # Fallback to single file formats if merging fails
+            'best[ext=mp4][height>=720]/'
+            'best[ext=webm][height>=720]/'
+            'best[ext=mp4]/'
+            'best[ext=webm]/'
+            'best'
         )
     else:
         clip_format = None
     
-    # Define working strategies - Optimized for quality
+    # Define working strategies - Simple and reliable
     strategies = [
         {
-            'name': 'Web client with DASH (high quality)',
+            'name': 'Web client with DASH (reliable)',
             'opts': {
-                'format': clip_format if is_youtube_clips else 'bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080]/best',
+                'format': clip_format if is_youtube_clips else 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                'merge_output_format': 'mp4',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
@@ -434,8 +433,9 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['web'],
-                        # CRITICAL FIX: Don't skip DASH, but configure it properly
-                        'skip': ['hls'],  # Only skip HLS
+                        'skip': ['hls'],  # Skip HLS only
+                        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                        'merge_output_format': 'mp4',
                     }
                 },
                 'postprocessors': [{
@@ -447,8 +447,9 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         {
             'name': 'Specific format targeting',
             'opts': {
-                # Target high quality formats with merging
-                'format': 'bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080]/best' if is_youtube_clips else 'bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080]/best',
+                # Simple format selection for reliable merging
+                'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]' if is_youtube_clips else 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                'merge_output_format': 'mp4',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
