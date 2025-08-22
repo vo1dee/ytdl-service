@@ -352,20 +352,36 @@ def cleanup_files(prefix):
 
 def get_clip_formats():
     """Get format selection specifically optimized for YouTube clips"""
+    # First get available formats to determine what's actually available
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            info = ydl.extract_info(request.url, download=False)
+            if 'formats' in info:
+                # Find all video formats, sort by resolution and codec
+                video_formats = [
+                    f for f in info['formats'] 
+                    if f.get('vcodec') != 'none' and f.get('height')
+                ]
+                video_formats.sort(key=lambda x: (
+                    x.get('height', 0),
+                    x.get('width', 0),
+                    x.get('fps', 0),
+                    x.get('vcodec', '').startswith('vp9')  # Prefer VP9
+                ), reverse=True)
+                
+                if video_formats:
+                    best_format = video_formats[0]
+                    format_id = best_format['format_id']
+                    logger.info(f"Selected best format: {format_id} ({best_format.get('width')}x{best_format.get('height')}@{best_format.get('fps', '?')}fps) {best_format.get('vcodec', '').split('.')[0]}")
+                    return [f'{format_id}+bestaudio[ext=m4a]']
+    
+    except Exception as e:
+        logger.warning(f"Could not determine best format, using fallback: {e}")
+    
+    # Fallback formats if we couldn't determine the best one
     return [
-        # VP9 formats (often higher quality for clips)
-        'bestvideo[ext=mp4][vcodec^=vp9][height<=2160][fps<=60]+bestaudio[ext=m4a]',
-        'bestvideo[ext=mp4][vcodec^=vp9][height<=1080][fps<=60]+bestaudio[ext=m4a]',
-        'bestvideo[ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]',
-        # AVC formats (better compatibility)
-        'bestvideo[ext=mp4][vcodec^=avc1][height<=2160][fps<=60]+bestaudio[ext=m4a]',
-        'bestvideo[ext=mp4][vcodec^=avc1][height<=1080][fps<=60]+bestaudio[ext=m4a]',
-        'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]',
-        # Progressive formats as fallback
-        'best[ext=mp4][height<=2160][fps<=60]',
-        'best[ext=mp4][height<=1080]',
-        'best[ext=mp4]',
-        # Final fallback to anything
+        'bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height>=720][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+        'bestvideo+bestaudio[ext=m4a]/best',
         'best'
     ]
 
