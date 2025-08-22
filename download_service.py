@@ -350,6 +350,21 @@ def cleanup_files(prefix):
     except Exception as e:
         logger.error(f"Error during cleanup: {e}")
 
+def get_clip_formats():
+    """Get format selection specifically optimized for YouTube clips"""
+    return [
+        # Best quality with separate audio/video
+        'bestvideo[height<=2160][fps<=60][vcodec^=avc1]+bestaudio[ext=m4a]',
+        'bestvideo[height<=2160][fps<=60]+bestaudio[ext=m4a]',
+        'bestvideo[height<=1080][fps<=60]+bestaudio[ext=m4a]',
+        # Progressive formats
+        'best[height<=2160][ext=mp4][fps<=60]',
+        'best[height<=1080][ext=mp4]',
+        'best[ext=mp4]',
+        # Fallback to anything
+        'best'
+    ]
+
 def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
     """Enhanced YouTube download with working strategies"""
     
@@ -364,10 +379,10 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for clips - prioritize best quality with MP4 fallback
+    # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        # First try best quality, then fall back to MP4 formats
-        clip_format = 'bestvideo[ext=mp4][height<=2160][fps<=60][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=2160][fps<=60]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+        clip_format = '/'.join(get_clip_formats())
+        logger.info(f"Using clip-optimized format selection")
     else:
         clip_format = None
     
@@ -460,6 +475,20 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             logger.info(f"   Using clip-optimized format: {strategy['opts']['format']}")
         
         try:
+            # First get available formats for debugging
+            if is_youtube_clips:
+                with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_info:
+                    info_dict = ydl_info.extract_info(request.url, download=False)
+                    if 'formats' in info_dict:
+                        logger.info("Available formats for clip:")
+                        for f in sorted(info_dict['formats'], key=lambda x: x.get('height', 0), reverse=True):
+                            if f.get('vcodec') != 'none':  # Skip audio-only formats
+                                logger.info(f"  - {f.get('format_id')}: {f.get('resolution') or f.get('ext')} "
+                                           f"({f.get('width')}x{f.get('height')}@{f.get('fps', '?')}fps) "
+                                           f"vcodec:{f.get('vcodec', '?').split('.')[0]} "
+                                           f"acodec:{f.get('acodec', '?').split('.')[0]}")
+            
+            # Now perform the actual download
             with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
                 info = ydl.extract_info(request.url, download=True)
                 
