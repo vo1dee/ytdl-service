@@ -401,15 +401,13 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     # Special handling for YouTube clips - Explicit format selection
     if is_youtube_clips:
         logger.info("Using explicit format selection for YouTube clips")
-        # Explicit format selection with fallbacks
+        # For clips, use a simpler format selection that works better with clip extraction
         clip_format = '\n'.join([
-            # First try: Known good format IDs from the logs
-            '313/315/308/315/303/299/298/266/264/137/136/135/134/133/160/278/242/395/394/18/22/36/43/17/5',
-            # Fallback to best available
-            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/bestaudio',
-            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/bestaudio',
-            'best[height>=720][ext=mp4]/best[height>=720][ext=webm]',
-            'best[ext=mp4]/best[ext=webm]',
+            # Try direct format IDs that work with clips
+            '18/22/36/43',  # Standard formats that usually work with clips
+            # Fallback to best MP4 format
+            'best[ext=mp4]',
+            # Final fallback to any format
             'best'
         ])
     else:
@@ -418,7 +416,29 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     # Define working strategies - Simplified for clips
     strategies = [
         {
-            'name': 'Web client (simplified for clips)',
+            'name': 'Direct format download (best for clips)',
+            'opts': {
+                'format': clip_format if is_youtube_clips else 'best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 3,
+                'fragment_retries': 3,
+                'socket_timeout': 30,
+                'ignoreerrors': False,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.youtube.com/'
+                }
+            }
+        },
+        {
+            'name': 'Web client (with format selection)',
             'opts': {
                 'format': clip_format if is_youtube_clips else 'best',
                 'merge_output_format': 'mp4',
@@ -458,13 +478,12 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'progress_hooks': [download_progress_hook],
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['web', 'android'],  # Try both web and android clients
-                        'skip': ['hls'],  # Skip HLS only
-                        'format': 'bestvideo[height<=1440]+bestaudio/best[height>=720]/best',
-                        'merge_output_format': 'mp4',
+                        'player_client': ['android', 'web'],  # Try android first as it's more reliable for clips
+                        'skip': ['hls', 'dash'],  # Skip HLS and DASH to avoid extraction issues
                         'noplaylist': True,  # Ensure we don't try to download playlists
                         'quiet': False,
-                        'no_warnings': False
+                        'no_warnings': False,
+                        'extract_flat': False  # Ensure we don't use flat extraction
                     }
                 },
                 'postprocessors': [{
