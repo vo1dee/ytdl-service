@@ -353,15 +353,19 @@ def cleanup_files(prefix):
 def get_clip_formats():
     """Get format selection specifically optimized for YouTube clips"""
     return [
-        # Best quality with separate audio/video
-        'bestvideo[height<=2160][fps<=60][vcodec^=avc1]+bestaudio[ext=m4a]',
-        'bestvideo[height<=2160][fps<=60]+bestaudio[ext=m4a]',
-        'bestvideo[height<=1080][fps<=60]+bestaudio[ext=m4a]',
-        # Progressive formats
-        'best[height<=2160][ext=mp4][fps<=60]',
-        'best[height<=1080][ext=mp4]',
+        # VP9 formats (often higher quality for clips)
+        'bestvideo[ext=mp4][vcodec^=vp9][height<=2160][fps<=60]+bestaudio[ext=m4a]',
+        'bestvideo[ext=mp4][vcodec^=vp9][height<=1080][fps<=60]+bestaudio[ext=m4a]',
+        'bestvideo[ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]',
+        # AVC formats (better compatibility)
+        'bestvideo[ext=mp4][vcodec^=avc1][height<=2160][fps<=60]+bestaudio[ext=m4a]',
+        'bestvideo[ext=mp4][vcodec^=avc1][height<=1080][fps<=60]+bestaudio[ext=m4a]',
+        'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]',
+        # Progressive formats as fallback
+        'best[ext=mp4][height<=2160][fps<=60]',
+        'best[ext=mp4][height<=1080]',
         'best[ext=mp4]',
-        # Fallback to anything
+        # Final fallback to anything
         'best'
     ]
 
@@ -481,12 +485,23 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     info_dict = ydl_info.extract_info(request.url, download=False)
                     if 'formats' in info_dict:
                         logger.info("Available formats for clip:")
-                        for f in sorted(info_dict['formats'], key=lambda x: x.get('height', 0), reverse=True):
-                            if f.get('vcodec') != 'none':  # Skip audio-only formats
-                                logger.info(f"  - {f.get('format_id')}: {f.get('resolution') or f.get('ext')} "
-                                           f"({f.get('width')}x{f.get('height')}@{f.get('fps', '?')}fps) "
-                                           f"vcodec:{f.get('vcodec', '?').split('.')[0]} "
-                                           f"acodec:{f.get('acodec', '?').split('.')[0]}")
+                        def get_sort_key(f):
+                            # Handle missing values safely
+                            h = f.get('height') or 0
+                            w = f.get('width') or 0
+                            fps = f.get('fps') or 0
+                            return (h, w, fps)
+                            
+                        for f in sorted((f for f in info_dict['formats'] if f.get('vcodec') != 'none'), 
+                                     key=get_sort_key, reverse=True):
+                            vcodec = (f.get('vcodec') or '?').split('.')[0]
+                            acodec = (f.get('acodec') or '?').split('.')[0]
+                            width = f.get('width', '?')
+                            height = f.get('height', '?')
+                            fps = f.get('fps', '?')
+                            resolution = f.get('resolution') or f'{width}x{height}'
+                            logger.info(f"  - {f.get('format_id')}: {resolution}@{fps}fps "
+                                      f"vcodec:{vcodec} acodec:{acodec}")
             
             # Now perform the actual download
             with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
