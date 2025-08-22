@@ -387,31 +387,27 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for clips - Simple and reliable format selection
+    # Special handling for YouTube clips - Simplified format selection
     if is_youtube_clips:
-        logger.info("Using reliable format selection for clips")
-        # Simple format selection that works with YouTube's DASH streams
+        logger.info("Using simplified format selection for YouTube clips")
+        # Very simple format selection that works with YouTube's clip format
         clip_format = (
-            # First try: Best available format with separate video+audio
-            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/'
-            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/'
-            # Fallback to single file formats if merging fails
-            'best[ext=mp4][height>=720]/'
-            'best[ext=webm][height>=720]/'
-            'best[ext=mp4]/'
-            'best[ext=webm]/'
+            # First try: Best available video + audio (let yt-dlp handle the merging)
+            'bestvideo+bestaudio/'
+            # Fallback to any single format that has both video and audio
             'best'
         )
     else:
         clip_format = None
     
-    # Define working strategies - Simple and reliable
+    # Define working strategies - Simplified for clips
     strategies = [
         {
-            'name': 'Web client with DASH (reliable)',
+            'name': 'Web client (simplified for clips)',
             'opts': {
-                'format': clip_format if is_youtube_clips else 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                'format': clip_format if is_youtube_clips else 'best',
                 'merge_output_format': 'mp4',
+                'format_sort': ['res:1080', 'res:720', 'res:480', 'res:360'],
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
@@ -434,7 +430,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     'youtube': {
                         'player_client': ['web'],
                         'skip': ['hls'],  # Skip HLS only
-                        'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                        'format': 'best',  # Let yt-dlp choose the best format
                         'merge_output_format': 'mp4',
                     }
                 },
@@ -447,9 +443,10 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         {
             'name': 'Specific format targeting',
             'opts': {
-                # Simple format selection for reliable merging
-                'format': 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]' if is_youtube_clips else 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[height>=720]',
+                # Simple format selection
+                'format': clip_format if is_youtube_clips else 'best',
                 'merge_output_format': 'mp4',
+                'format_sort': ['res:1080', 'res:720', 'res:480', 'res:360'],
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
