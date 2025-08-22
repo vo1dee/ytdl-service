@@ -387,21 +387,19 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for clips - CORRECTED format selection
+    # Special handling for clips - SIMPLIFIED and WORKING format selection
     if is_youtube_clips:
         logger.info("Using optimized format selection for clip (targeting up to 1440p)")
-        # Fixed format selector - the issue was in the complex fallback chain
+        # FIXED: Much simpler format selector that actually works
         clip_format = (
-            # First try: Best available video with best audio, prefer H.264 for compatibility
-            'bestvideo[height<=1440][vcodec*=avc1]+bestaudio[acodec*=mp4a]/bestvideo[height<=1440][vcodec*=avc1]+bestaudio/'
-            # Second try: VP9 with good audio
-            'bestvideo[height<=1440][vcodec*=vp9]+bestaudio[acodec*=mp4a]/bestvideo[height<=1440][vcodec*=vp9]+bestaudio/'
-            # Third try: Any good quality video with audio
-            'bestvideo[height<=1440]+bestaudio[acodec*=mp4a]/bestvideo[height<=1440]+bestaudio/'
-            # Fourth try: 1080p fallbacks
-            'bestvideo[height<=1080]+bestaudio/best[height<=1080]/'
-            # Final fallback: best available
-            'best'
+            # Strategy 1: Try specific high-quality formats we know exist
+            '312+bestaudio/299+bestaudio/'  # 1080p H.264 formats from your logs
+            '311+bestaudio/'                 # 720p H.264 format
+            # Strategy 2: General high-quality selectors
+            'bestvideo[height<=1440]+bestaudio/'
+            'bestvideo[height<=1080]+bestaudio/'
+            # Strategy 3: Single format fallbacks
+            'best[height>=720]/22/18/best'
         )
     else:
         clip_format = None
@@ -444,10 +442,10 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             }
         },
         {
-            'name': 'Web client (format 22/18 fallback)',
+            'name': 'Specific format targeting',
             'opts': {
-                # CRITICAL: For clips, try higher quality single formats first
-                'format': 'best[height>=720]/22/18/best' if is_youtube_clips else '22/18/best',
+                # DIRECT: Target the specific formats we saw in logs
+                'format': '312/299/311/623/308/617/303/612/22/18/best' if is_youtube_clips else '22/18/best',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
@@ -618,7 +616,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         "error": "All YouTube strategies failed",
         "error_type": "youtube_extraction_failed"
     }
-
+    
 @app.post("/download")
 async def download_video(request: DownloadRequest,
                         background_tasks: BackgroundTasks,
