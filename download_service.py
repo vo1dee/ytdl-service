@@ -364,10 +364,10 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for clips - they often work better with different format selection
+    # Special handling for clips - prioritize best quality with MP4 fallback
     if is_youtube_clips:
-        # For clips, prefer formats that are more likely to be available
-        clip_format = 'best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best'
+        # First try best quality, then fall back to MP4 formats
+        clip_format = 'bestvideo[ext=mp4][height<=2160][fps<=60][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=2160][fps<=60]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     else:
         clip_format = None
     
