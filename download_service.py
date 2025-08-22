@@ -389,8 +389,9 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     
     # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        clip_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-        logger.info(f"Using clip-optimized format selection")
+        # Prioritize 1080p MP4 with AVC codec, fallback to other 1080p formats, then best available
+        clip_format = 'bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/best[height=1080]/best'
+        logger.info(f"Using 1080p-optimized format selection for clip")
         # Add additional headers specifically for clips
         clip_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
