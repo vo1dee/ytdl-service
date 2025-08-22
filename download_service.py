@@ -364,12 +364,19 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
+    # Special handling for clips - they often work better with different format selection
+    if is_youtube_clips:
+        # For clips, prefer formats that are more likely to be available
+        clip_format = 'best[ext=mp4][height<=720]/best[ext=mp4]/best[height<=720]/best'
+    else:
+        clip_format = None
+    
     # Define working strategies based on bot testing
     strategies = [
         {
             'name': 'Android client (proven working)',
             'opts': {
-                'format': '18/22/best[ext=mp4]/best',
+                'format': clip_format if is_youtube_clips else '18/22/best[ext=mp4]/best',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 2,
@@ -394,7 +401,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         {
             'name': 'iOS client fallback',
             'opts': {
-                'format': 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/18/22/best',
+                'format': clip_format if is_youtube_clips else 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/18/22/best',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 2,
@@ -419,7 +426,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         {
             'name': 'Web client with headers',
             'opts': {
-                'format': '18/22/best[ext=mp4]/best',
+                'format': clip_format if is_youtube_clips else '18/22/best[ext=mp4]/best',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 2,
@@ -447,6 +454,10 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     # Try each strategy
     for i, strategy in enumerate(strategies, 1):
         logger.info(f"📋 Trying YouTube strategy {i}/{len(strategies)}: {strategy['name']}")
+        
+        # Add additional debug info for clips
+        if is_youtube_clips:
+            logger.info(f"   Using clip-optimized format: {strategy['opts']['format']}")
         
         try:
             with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
