@@ -389,9 +389,19 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     
     # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        # Prioritize 1080p MP4 with AVC codec, fallback to other 1080p formats, then best available
-        clip_format = 'bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080]+bestaudio/best[height=1080]/best'
-        logger.info(f"Using 1080p-optimized format selection for clip")
+        # Prioritize highest quality available, starting with 1440p/1080p, including VP9/AV1 codecs
+        clip_format = 'bestvideo[height<=1440][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height<=1440][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height=1080][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/' \
+                     'bestvideo[height<=1440]+bestaudio/best[height<=1440]/' \
+                     'bestvideo[height=1080]+bestaudio/best[height=1080]/best'
+        logger.info(f"Using high-quality format selection for clip (prioritizing 1440p/1080p)")
+        
+        # Force format selection to ensure we don't get a default low-res format
+        ytdl_format_force = True
         # Add additional headers specifically for clips
         clip_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -525,6 +535,8 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     'no_warnings': False,
                     'quiet': False,
                     'format': ydl_opts.get('format', 'best'),  # Ensure format is set
+                    'format_sort': ['res:1080', 'res:1440', 'res:2160', 'res:4320', 'res:2880'],  # Prefer higher resolutions
+                    'format_sort_force': True,  # Enforce format sorting
                     'http_headers': {**ydl_opts.get('http_headers', {}), **clip_headers},
                     'extractor_retries': 3,
                     'fragment_retries': 10,
