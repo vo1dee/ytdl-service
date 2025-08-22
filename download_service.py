@@ -373,6 +373,12 @@ def get_clip_formats():
         'best'
     ]
 
+# Complete replacement for your download_youtube_video function
+# The main issues were:
+# 1. 'skip': ['dash'] was disabling high-quality streams
+# 2. Incorrect format parameter in extractor_args
+# 3. Android client doesn't support DASH merging well
+
 def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
     """Enhanced YouTube download with working strategies"""
     
@@ -389,66 +395,96 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     
     # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        # Fixed format selection for clips - properly handle DASH streams
+        # Optimized format selection for clips
         clip_format = (
-            # First priority: High-quality AVC1 (H.264) video + best audio
-            'bestvideo[height<=1440][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/'
+            # Priority 1: Best quality H.264 video + audio (most compatible)
             'bestvideo[height<=1440][vcodec^=avc1]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/'
             
-            # Second priority: High-quality VP9 video + best audio  
-            'bestvideo[height<=1440][vcodec^=vp9][ext=webm]+bestaudio[ext=m4a]/'
+            # Priority 2: VP9 high quality
             'bestvideo[height<=1440][vcodec^=vp9]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=1080][vcodec^=vp9]+bestaudio[ext=m4a]/'
             
-            # Third priority: Any high-quality video + audio
+            # Priority 3: Any high quality video + audio
             'bestvideo[height<=1440]+bestaudio[ext=m4a]/'
-            'bestvideo[height<=1440]+bestaudio/'
+            'bestvideo[height<=1080]+bestaudio/'
             
-            # 1080p fallbacks
-            'bestvideo[height=1080][vcodec^=avc1]+bestaudio[ext=m4a]/'
-            'bestvideo[height=1080][vcodec^=vp9]+bestaudio[ext=m4a]/'
-            'bestvideo[height=1080]+bestaudio/'
+            # Priority 4: 720p fallbacks
+            'bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/'
+            'bestvideo[height<=720]+bestaudio/'
             
-            # 720p fallbacks
-            'bestvideo[height=720][vcodec^=avc1]+bestaudio[ext=m4a]/'
-            'bestvideo[height=720]+bestaudio/'
-            
-            # Final fallback to any quality
-            'bestvideo+bestaudio/best[height<=1440]/best'
+            # Final fallbacks
+            'bestvideo+bestaudio/best'
         )
         
-        logger.info(f"Using optimized format selection for clip (targeting 1440p/1080p)")
-        
-        # Add additional headers specifically for clips
-        clip_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-            'DNT': '1',
-        }
-        
-        # Update ydl_opts for proper merging
-        if 'opts' in locals():
-            ydl_opts = strategy['opts'].copy()
-            ydl_opts.update({
-                'format': clip_format,
-                'merge_output_format': 'mp4',  # Ensure final output is MP4
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }] if not ydl_opts.get('postprocessors') else ydl_opts['postprocessors']
-            })
+        logger.info(f"Using optimized format selection for clip (targeting up to 1440p)")
     else:
         clip_format = None
-        clip_headers = {}
     
-    # Define working strategies based on bot testing
+    # Define working strategies - CORRECTED VERSION
     strategies = [
         {
-            'name': 'Android client (proven working)',
+            'name': 'Web client with DASH (high quality)',
             'opts': {
-                'format': clip_format if is_youtube_clips else '18/22/best[ext=mp4]/best',
+                'format': clip_format if is_youtube_clips else 'bestvideo[height<=1080]+bestaudio/best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 3,
+                'fragment_retries': 5,
+                'socket_timeout': 30,
+                'ignoreerrors': False,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'merge_output_format': 'mp4',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.youtube.com/'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['web'],
+                        # DON'T skip DASH - we need it for high quality!
+                        'skip': ['hls']  # Only skip HLS, keep DASH
+                    }
+                },
+                'postprocessors': []
+            }
+        },
+        {
+            'name': 'iOS client with DASH',
+            'opts': {
+                'format': clip_format if is_youtube_clips else 'bestvideo[height<=1080]+bestaudio/best',
+                'outtmpl': output_template,
+                'restrictfilenames': True,
+                'retries': 3,
+                'fragment_retries': 5,
+                'socket_timeout': 30,
+                'ignoreerrors': False,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'quiet': False,
+                'no_warnings': False,
+                'merge_output_format': 'mp4',
+                'http_headers': {
+                    'User-Agent': 'com.google.ios.youtube/17.36.4 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['ios'],
+                        'skip': ['hls']  # Keep DASH enabled
+                    }
+                },
+                'postprocessors': []
+            }
+        },
+        {
+            'name': 'Android client (fallback for compatibility)',
+            'opts': {
+                'format': '18/22/best[ext=mp4]/best',  # Android often has issues with DASH
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 2,
@@ -467,57 +503,6 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                         'player_client': ['android']
                     }
                 },
-                'postprocessors': []  # No post-processing for reliability
-            }
-        },
-        {
-            'name': 'iOS client fallback',
-            'opts': {
-                'format': clip_format if is_youtube_clips else 'bestvideo[vcodec^=avc1]+bestaudio/best[vcodec^=avc1]/18/22/best',
-                'outtmpl': output_template,
-                'restrictfilenames': True,
-                'retries': 2,
-                'fragment_retries': 2,
-                'socket_timeout': 30,
-                'ignoreerrors': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-                'quiet': False,
-                'no_warnings': False,
-                'http_headers': {
-                    'User-Agent': 'com.google.ios.youtube/17.36.4 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
-                },
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['ios']
-                    }
-                },
-                'postprocessors': []
-            }
-        },
-        {
-            'name': 'Web client with headers',
-            'opts': {
-                'format': clip_format if is_youtube_clips else '18/22/best[ext=mp4]/best',
-                'outtmpl': output_template,
-                'restrictfilenames': True,
-                'retries': 2,
-                'fragment_retries': 2,
-                'socket_timeout': 30,
-                'ignoreerrors': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-                'quiet': False,
-                'no_warnings': False,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer': 'https://www.youtube.com/'
-                },
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['web']
-                    }
-                },
                 'postprocessors': []
             }
         }
@@ -527,104 +512,96 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     for i, strategy in enumerate(strategies, 1):
         logger.info(f"📋 Trying YouTube strategy {i}/{len(strategies)}: {strategy['name']}")
         
-        # Add additional debug info for clips
         if is_youtube_clips:
             logger.info(f"   Using clip-optimized format: {strategy['opts']['format']}")
         
         try:
-            # First get available formats for debugging
-            if is_youtube_clips:
-                with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_info:
-                    info_dict = ydl_info.extract_info(request.url, download=False)
-                    if 'formats' in info_dict:
-                        logger.info("Available formats for clip:")
-                        def get_sort_key(f):
-                            # Handle missing values safely
-                            h = f.get('height') or 0
-                            w = f.get('width') or 0
-                            fps = f.get('fps') or 0
-                            return (h, w, fps)
+            # Get available formats for debugging (only for clips)
+            if is_youtube_clips and i == 1:  # Only show formats on first attempt
+                try:
+                    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_info:
+                        info_dict = ydl_info.extract_info(request.url, download=False)
+                        if 'formats' in info_dict:
+                            logger.info("Available formats for clip:")
+                            # Show video formats sorted by quality
+                            video_formats = [f for f in info_dict['formats'] if f.get('vcodec') != 'none']
+                            audio_formats = [f for f in info_dict['formats'] if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
                             
-                        for f in sorted((f for f in info_dict['formats'] if f.get('vcodec') != 'none'), 
-                                     key=get_sort_key, reverse=True):
-                            vcodec = (f.get('vcodec') or '?').split('.')[0]
-                            acodec = (f.get('acodec') or '?').split('.')[0]
-                            width = f.get('width', '?')
-                            height = f.get('height', '?')
-                            fps = f.get('fps', '?')
-                            resolution = f.get('resolution') or f'{width}x{height}'
-                            logger.info(f"  - {f.get('format_id')}: {resolution}@{fps}fps "
-                                      f"vcodec:{vcodec} acodec:{acodec}")
-                        # Now perform the actual download with more verbose logging
-                ydl_opts = strategy['opts'].copy()
-                ydl_opts.update({
-                    'verbose': True,
-                    'ignoreerrors': False,
-                    'no_warnings': False,
-                    'quiet': False,
-                    'format': ydl_opts.get('format', 'best'),  # Ensure format is set
-                    'format_sort': ['res:1080', 'res:1440', 'res:2160', 'res:4320', 'res:2880'],  # Prefer higher resolutions
-                    'format_sort_force': True,  # Enforce format sorting
-                    'http_headers': {**ydl_opts.get('http_headers', {}), **clip_headers},
-                    'extractor_retries': 3,
-                    'fragment_retries': 10,
-                    'retries': 10,
-                    'file_access_retries': 10,
-                    'extractor_args': {
-                        'youtube': {
-                            'skip': ['hls'],  # Enable DASH formats
-                            'player_client': ['web', 'android'],
-                            'player_skip': ['configs', 'webpage'],
-                            'format': 'bestvideo[height<=1440][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4][vcodec^=vp9]+bestaudio[ext=m4a]/bestvideo[height=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]/bestvideo[height=1080]+bestaudio/best[height=1080]/best'
-                        }
-                    },
-                    'merge_output_format': 'mp4',  # Ensure MP4 output
-                    'nocheckcertificate': True,
-                    'extract_flat': False,
-                    'force_generic_extractor': False
-                })
+                            logger.info("Video streams:")
+                            for f in sorted(video_formats, key=lambda x: x.get('height', 0), reverse=True)[:10]:
+                                vcodec = (f.get('vcodec') or '?').split('.')[0]
+                                height = f.get('height', '?')
+                                fps = f.get('fps', '?')
+                                logger.info(f"  - {f.get('format_id')}: {height}p@{fps}fps {vcodec}")
+                            
+                            logger.info("Audio streams:")
+                            for f in audio_formats[:5]:
+                                acodec = (f.get('acodec') or '?').split('.')[0]
+                                abr = f.get('abr', '?')
+                                logger.info(f"  - {f.get('format_id')}: {acodec} {abr}kbps")
+                except:
+                    pass  # Don't fail if format listing fails
+            
+            # Perform the download
+            ydl_opts = strategy['opts'].copy()
+            
+            logger.info(f"Downloading with format: {ydl_opts['format']}")
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract info first
+                info = ydl.extract_info(request.url, download=False)
                 
-                logger.info(f"Attempting download with options: {ydl_opts}")
-                
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # First get info to see what will be downloaded
-                    info = ydl.extract_info(request.url, download=False)
-                    logger.info(f"Selected format: {info.get('format_id')} - {info.get('ext')} - {info.get('resolution')}")
-                    
-                    # Now perform the actual download
-                    info = ydl.process_ie_result(info, download=True)
-                
-                if info:
-                    logger.info(f"✅ YouTube strategy '{strategy['name']}' succeeded!")
-                    
-                    # Wait for file system
-                    time.sleep(2)
-                    
-                    # Find downloaded file
-                    downloaded_file = find_downloaded_file(download_id)
-                    if downloaded_file:
-                        video_info = get_video_info(downloaded_file)
-                        logger.info(f"YouTube download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
-                        
-                        return {
-                            "success": True,
-                            "file_path": os.path.basename(downloaded_file),
-                            "download_url": f"/files/{os.path.basename(downloaded_file)}",
-                            "title": info.get('title', 'YouTube Video'),
-                            "url": request.url,
-                            "description": info.get('description', ''),
-                            "tags": info.get('tags', []),
-                            "duration": info.get('duration'),
-                            "uploader": info.get('uploader'),
-                            "file_size_bytes": os.path.getsize(downloaded_file),
-                            "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
-                            "video_info": video_info,
-                            "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only",
-                            "strategy_used": strategy['name']
-                        }
+                # Log what format will be selected
+                if 'requested_formats' in info:
+                    video_format = next((f for f in info['requested_formats'] if f.get('vcodec') != 'none'), None)
+                    audio_format = next((f for f in info['requested_formats'] if f.get('acodec') != 'none'), None)
+                    if video_format and audio_format:
+                        logger.info(f"Will download: Video {video_format.get('format_id')} ({video_format.get('height')}p) + Audio {audio_format.get('format_id')}")
                     else:
-                        logger.error(f"Downloaded file not found for strategy: {strategy['name']}")
-                        
+                        logger.info(f"Will download single format: {info.get('format_id')} - {info.get('resolution')}")
+                else:
+                    logger.info(f"Will download single format: {info.get('format_id')} - {info.get('resolution')}")
+                
+                # Now perform the actual download
+                info = ydl.extract_info(request.url, download=True)
+            
+            if info:
+                logger.info(f"✅ YouTube strategy '{strategy['name']}' succeeded!")
+                
+                # Wait for file system
+                time.sleep(2)
+                
+                # Find downloaded file
+                downloaded_file = find_downloaded_file(download_id)
+                if downloaded_file:
+                    video_info = get_video_info(downloaded_file)
+                    logger.info(f"YouTube download successful: {os.path.basename(downloaded_file)} - {video_info['width']}x{video_info['height']}")
+                    
+                    # Add debugging info about what was actually downloaded
+                    if 'requested_formats' in info:
+                        selected_video = next((f for f in info['requested_formats'] if f.get('vcodec') != 'none'), None)
+                        if selected_video:
+                            logger.info(f"Selected video format: {selected_video.get('format_id')} - {selected_video.get('height')}p - {selected_video.get('vcodec')}")
+                    
+                    return {
+                        "success": True,
+                        "file_path": os.path.basename(downloaded_file),
+                        "download_url": f"/files/{os.path.basename(downloaded_file)}",
+                        "title": info.get('title', 'YouTube Video'),
+                        "url": request.url,
+                        "description": info.get('description', ''),
+                        "tags": info.get('tags', []),
+                        "duration": info.get('duration'),
+                        "uploader": info.get('uploader'),
+                        "file_size_bytes": os.path.getsize(downloaded_file),
+                        "file_size_mb": round(os.path.getsize(downloaded_file) / (1024 * 1024), 2),
+                        "video_info": video_info,
+                        "quality": f"{video_info['width']}x{video_info['height']}" if video_info['width'] > 0 else "Audio only",
+                        "strategy_used": strategy['name']
+                    }
+                else:
+                    logger.error(f"Downloaded file not found for strategy: {strategy['name']}")
+                    
         except yt_dlp.utils.DownloadError as e:
             logger.warning(f"❌ YouTube strategy '{strategy['name']}' failed: {str(e)}")
             cleanup_files(download_id)
