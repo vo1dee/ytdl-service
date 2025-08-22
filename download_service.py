@@ -351,22 +351,27 @@ def cleanup_files(prefix):
         logger.error(f"Error during cleanup: {e}")
 
 def get_clip_formats():
-    """Get format selection specifically optimized for YouTube clips"""
-    # Try explicit format combinations with forced download
-    explicit_formats = [
-        # Try highest quality first with forced format
-        '308+bestaudio[ext=m4a]/308+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        '623+bestaudio[ext=m4a]/623+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        '400+bestaudio[ext=m4a]/400+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        '299+bestaudio[ext=m4a]/299+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        '312+bestaudio[ext=m4a]/312+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        '617+bestaudio[ext=m4a]/617+bestaudio/bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        'bestvideo[height>=1080]+bestaudio[ext=m4a]/bestvideo+bestaudio[ext=m4a]/best',
-        'best[height>=1080]/best'
+    """Get format selection specifically optimized for YouTube clips.
+    Prioritizes MP4 format for better compatibility and includes fallback options.
+    """
+    return [
+        # Best quality MP4 with audio (up to 1080p)
+        'bestvideo[ext=mp4][height<=1080][fps<=60][vcodec^=avc1]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]',
+        
+        # Fallback to any MP4 with audio (up to 1080p)
+        'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]',
+        
+        # Best quality with any video codec (up to 1080p)
+        'bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080]',
+        
+        # Fallback to any quality with MP4 container
+        'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+        
+        # Final fallback to any format
+        'bestvideo+bestaudio/best',
+        'best[height>=1080]/best',
+        'best'
     ]
-    
-    logger.info("Using force-download format selection for clip")
-    return explicit_formats
 
 def download_youtube_video(request: DownloadRequest, download_id: str, output_template: str):
     """Enhanced YouTube download with working strategies"""
@@ -384,10 +389,20 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     
     # Special handling for clips - use dedicated format selection
     if is_youtube_clips:
-        clip_format = '/'.join(get_clip_formats())
+        clip_format = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
         logger.info(f"Using clip-optimized format selection")
+        # Add additional headers specifically for clips
+        clip_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'DNT': '1',
+        }
     else:
         clip_format = None
+        clip_headers = {}
     
     # Define working strategies based on bot testing
     strategies = [
@@ -508,7 +523,22 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     'ignoreerrors': False,
                     'no_warnings': False,
                     'quiet': False,
-                    'format': ydl_opts.get('format', 'best')  # Ensure format is set
+                    'format': ydl_opts.get('format', 'best'),  # Ensure format is set
+                    'http_headers': {**ydl_opts.get('http_headers', {}), **clip_headers},
+                    'extractor_retries': 3,
+                    'fragment_retries': 10,
+                    'retries': 10,
+                    'file_access_retries': 10,
+                    'extractor_args': {
+                        'youtube': {
+                            'skip': ['dash', 'hls'],
+                            'player_client': ['web', 'android'],
+                            'player_skip': ['configs', 'webpage']
+                        }
+                    },
+                    'nocheckcertificate': True,
+                    'extract_flat': False,
+                    'force_generic_extractor': False
                 })
                 
                 logger.info(f"Attempting download with options: {ydl_opts}")
