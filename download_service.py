@@ -387,14 +387,20 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     logger.info(f"🎬 YouTube download detected: {request.url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
-    # Special handling for YouTube clips - Simplified format selection
+    # Special handling for YouTube clips - Explicit format selection
     if is_youtube_clips:
-        logger.info("Using simplified format selection for YouTube clips")
-        # Very simple format selection that works with YouTube's clip format
+        logger.info("Using explicit format selection for YouTube clips")
+        # Explicit format selection with fallbacks
         clip_format = (
-            # First try: Best available video + audio (let yt-dlp handle the merging)
-            'bestvideo+bestaudio/'
-            # Fallback to any single format that has both video and audio
+            # First try: Known good format IDs from the logs
+            '313/315/308/315/303/299/298/266/264/137/136/135/134/133/160/278/242/395/394/18/22/36/43/17/5',
+            # Fallback to best available
+            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/',
+            'bestvideo[ext=webm][height<=1440]+bestaudio[ext=webm]/',
+            'best[height>=720][ext=mp4]/',
+            'best[height>=720][ext=webm]/',
+            'best[ext=mp4]/',
+            'best[ext=webm]/',
             'best'
         )
     else:
@@ -407,7 +413,9 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             'opts': {
                 'format': clip_format if is_youtube_clips else 'best',
                 'merge_output_format': 'mp4',
-                'format_sort': ['res:1080', 'res:720', 'res:480', 'res:360'],
+                'format_sort': ['res:1440', 'res:1080', 'res:720', 'res:480', 'res:360'],
+                'format_sort_force': True,  # Enforce the format sort order
+                'prefer_free_formats': False,  # Prefer non-DASH formats first
                 'outtmpl': output_template,
                 'restrictfilenames': True,
                 'retries': 3,
@@ -428,10 +436,13 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 },
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['web'],
+                        'player_client': ['web', 'android'],  # Try both web and android clients
                         'skip': ['hls'],  # Skip HLS only
-                        'format': 'best',  # Let yt-dlp choose the best format
+                        'format': 'bestvideo[height<=1440]+bestaudio/best[height>=720]/best',
                         'merge_output_format': 'mp4',
+                        'noplaylist': True,  # Ensure we don't try to download playlists
+                        'quiet': False,
+                        'no_warnings': False
                     }
                 },
                 'postprocessors': [{
