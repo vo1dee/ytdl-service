@@ -401,14 +401,15 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     # Special handling for YouTube clips - Explicit format selection
     if is_youtube_clips:
         logger.info("Using explicit format selection for YouTube clips")
-        # For clips, use a simpler format selection that works better with clip extraction
+        # Prioritize high quality formats that we know exist based on logs
         clip_format = '\n'.join([
-            # Try direct format IDs that work with clips
-            '18/22/36/43',  # Standard formats that usually work with clips
-            # Fallback to best MP4 format
-            'best[ext=mp4]',
+            # Try high quality formats first (from the available formats in logs)
+            'bestvideo[height<=1440][fps<=60][vcodec^=avc1]+bestaudio[acodec^=mp4a]/best[height<=1440]',
+            'bestvideo[height<=1440][fps<=60]+bestaudio/best[height<=1440]',
+            # Fallback to standard formats
+            '22/18/36/43',  # Standard formats that usually work with clips
             # Final fallback to any format
-            'best'
+            'best[ext=mp4]/best[ext=webm]/best'
         ])
     else:
         clip_format = None
@@ -479,11 +480,12 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'extractor_args': {
                     'youtube': {
                         'player_client': ['android', 'web'],  # Try android first as it's more reliable for clips
-                        'skip': ['hls', 'dash'],  # Skip HLS and DASH to avoid extraction issues
+                        'skip': ['hls'],  # Only skip HLS, allow DASH for higher quality
                         'noplaylist': True,  # Ensure we don't try to download playlists
                         'quiet': False,
                         'no_warnings': False,
-                        'extract_flat': False  # Ensure we don't use flat extraction
+                        'extract_flat': False,  # Ensure we don't use flat extraction
+                        'format': 'bestvideo[height<=1440]+bestaudio/best[height>=720]'  # Direct format selection
                     }
                 },
                 'postprocessors': [{
