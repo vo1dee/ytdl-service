@@ -1,0 +1,35 @@
+# Docker Compose Override Example
+# Copy this file to docker-compose.override.yml and customize as needed
+# This file will automatically be used by docker-compose if present
+
+version: '3.8'
+
+services:
+  ytdl-service:
+    # Override port mapping for development
+    ports:
+      - "8080:8000"  # Change external port if 8000 is in use
+    
+    # Additional environment variables for development
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+      - YTDL_SERVICE_API_KEY=dev-api-key-12345
+      - TELEGRAM_BOT_TOKEN=your-telegram-bot-token-here
+      - TELEGRAM_ERROR_CHAT_ID=your-error-chat-id-here
+    
+    # Override volumes for development (optional)
+    volumes:
+      - ./downloads:/opt/ytdl_service/downloads
+      - ./logs:/var/log
+      - ./config:/opt/ytdl_service/config
+      # Mount source code for development (if needed)
+      # - ./:/opt/ytdl_service/app:ro
+    
+    # Development-specific health check (more frequent)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

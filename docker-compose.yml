@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  ytdl-service:
+    build: .
+    container_name: ytdl-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./downloads:/opt/ytdl_service/downloads
+      - ./logs:/var/log
+      - ./config:/opt/ytdl_service/config
+    environment:
+      - YTDL_SERVICE_URL=http://localhost:8000
+      - PORT=8000
+      - YTDL_MAX_RETRIES=3
+      - YTDL_RETRY_DELAY=1
+      - DOWNLOADS_DIR=/opt/ytdl_service/downloads
+      - LOGS_DIR=/var/log
+      - API_KEY_FILE=/opt/ytdl_service/config/api_key.txt
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - ytdl-network
+
+networks:
+  ytdl-network:
+    driver: bridge
