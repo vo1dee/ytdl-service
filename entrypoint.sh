@@ -198,7 +198,10 @@ configure_logging() {
     ACCESS_LOG_FILE="$LOGS_DIR/access.log"
     ERROR_LOG_FILE="$LOGS_DIR/error.log"
     
-    touch "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE"
+    # Try to create log files, but don't fail if we can't
+    touch "$YTDL_LOG_FILE" 2>/dev/null || log_warning "Cannot create main log file: $YTDL_LOG_FILE"
+    touch "$ACCESS_LOG_FILE" 2>/dev/null || log_warning "Cannot create access log file: $ACCESS_LOG_FILE"
+    touch "$ERROR_LOG_FILE" 2>/dev/null || log_warning "Cannot create error log file: $ERROR_LOG_FILE"
     
     # Set proper permissions (handle errors gracefully)
     if id "ytdl" &>/dev/null; then
