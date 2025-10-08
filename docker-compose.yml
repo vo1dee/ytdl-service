@@ -1,23 +1,26 @@
-version: '3.8'
-
 services:
   ytdl-service:
     build: .
     container_name: ytdl-service
     ports:
-      - "8000:8000"
+      - "${EXTERNAL_PORT:-8000}:${PORT:-8000}"
     volumes:
-      - ./downloads:/opt/ytdl_service/downloads
-      - ./logs:/var/log
-      - ./config:/opt/ytdl_service/config
+      - ${DOWNLOADS_HOST_PATH:-./downloads}:/opt/ytdl_service/downloads:rw
+      - ${LOGS_HOST_PATH:-./logs}:/var/log:rw
+      - ${CONFIG_HOST_PATH:-./config}:/opt/ytdl_service/config:rw
     environment:
-      - YTDL_SERVICE_URL=http://localhost:8000
-      - PORT=8000
-      - YTDL_MAX_RETRIES=3
-      - YTDL_RETRY_DELAY=1
-      - DOWNLOADS_DIR=/opt/ytdl_service/downloads
-      - LOGS_DIR=/var/log
-      - API_KEY_FILE=/opt/ytdl_service/config/api_key.txt
+      - YTDL_SERVICE_URL=${YTDL_SERVICE_URL:-http://localhost:8000}
+      - PORT=${PORT:-8000}
+      - YTDL_MAX_RETRIES=${YTDL_MAX_RETRIES:-3}
+      - YTDL_RETRY_DELAY=${YTDL_RETRY_DELAY:-1}
+      - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/opt/ytdl_service/downloads}
+      - LOGS_DIR=${LOGS_DIR:-/var/log}
+      - API_KEY_FILE=${API_KEY_FILE:-/opt/ytdl_service/config/api_key.txt}
+      - YTDL_SERVICE_API_KEY=${YTDL_SERVICE_API_KEY}
+      - SECURITY_HARDENING=${SECURITY_HARDENING:-false}
+      - UMASK=${UMASK:-0022}
+      - DEBUG=${DEBUG:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/opt/ytdl_service/health_check.sh", "--quick"]
