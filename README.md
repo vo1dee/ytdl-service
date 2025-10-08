@@ -1,6 +1,6 @@
 # YouTube Download Service
 
-A FastAPI-based service for downloading YouTube videos with API key authentication.
+A FastAPI-based service for downloading YouTube videos with API key authentication. Supports both traditional Python deployment and Docker containerization for easy deployment and scaling.
 
 ## Features
 
@@ -13,14 +13,58 @@ A FastAPI-based service for downloading YouTube videos with API key authenticati
 - 🗑️ File management (download & delete)
 - 📦 List available files for download
 - 🛠️ Graceful error handling and informative responses
+- 🐳 Docker containerization support
+- 📊 Health monitoring and metrics
+- 🔄 Automatic cleanup and maintenance
 
 ## Prerequisites
 
+### For Docker Deployment (Recommended)
+- Docker Engine 20.10+ or Docker Desktop
+- Docker Compose 2.0+
+- At least 2GB available disk space
+
+### For Traditional Python Deployment
 - Python 3.8 or higher
 - Linux/Unix system (for service deployment)
 - Sufficient disk space for downloads
 
-## Installation
+## Quick Start (Docker - Recommended)
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/vo1dee/ytdl-service.git
+   cd ytdl-service
+   ```
+
+2. Start with Docker Compose:
+   ```bash
+   # Copy environment template
+   cp .env.example .env
+   
+   # Build and start the service
+   docker-compose up -d
+   
+   # View logs
+   docker-compose logs -f ytdl-service
+   ```
+
+3. Access the service:
+   - API: http://localhost:8000
+   - Health Check: http://localhost:8000/health
+   - API Documentation: http://localhost:8000/docs
+
+## Installation Options
+
+### Option 1: Docker Deployment (Recommended)
+
+See the [Docker Deployment Guide](DOCKER_DEPLOYMENT.md) for comprehensive Docker setup instructions, including:
+- Basic development setup
+- Production deployment with reverse proxy
+- Multi-instance load balancing
+- Docker Swarm and Kubernetes examples
+
+### Option 2: Traditional Python Installation
 
 1. Clone the repository:
    ```bash
@@ -136,9 +180,58 @@ Service logs are stored in `/var/log/ytdl_service.log` with the following inform
 - Download progress
 - Error details (if any)
 
+## Documentation
+
+### Docker Deployment
+- [Docker Deployment Guide](DOCKER_DEPLOYMENT.md) - Comprehensive Docker setup and deployment instructions
+- [Docker Examples](DOCKER_EXAMPLES.md) - Practical examples for different deployment scenarios
+- [Volume Management and Backup Guide](VOLUME_MANAGEMENT.md) - Data persistence and backup strategies
+- [Troubleshooting Guide](TROUBLESHOOTING.md) - Common issues and solutions
+
+### Configuration
+- [Environment Variables](ENVIRONMENT_VARIABLES.md) - Complete configuration options
+- [Health Monitoring](HEALTH_MONITORING.md) - Health check and monitoring setup
+
+### iOS Compatibility
+- [iOS Compatibility Guide](iOS_COMPATIBILITY.md) - iOS-specific download optimizations
+
+## Management Scripts
+
+The service includes several management scripts for easy operation:
+
+```bash
+# Build Docker image
+./build.sh
+
+# Run container
+./run.sh
+
+# Stop container
+./stop.sh
+
+# View logs
+./logs.sh
+
+# Health check
+./health_check.sh
+```
+
 ## Development
 
-### Local Setup
+### Docker Development Setup
+```bash
+# Clone and setup
+git clone https://github.com/vo1dee/ytdl-service.git
+cd ytdl-service
+
+# Start development environment
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+# View logs
+docker-compose logs -f ytdl-service
+```
+
+### Local Python Setup
 ```bash
 # Clone and setup
 git clone https://github.com/vo1dee/ytdl-service.git
