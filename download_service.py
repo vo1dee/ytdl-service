@@ -19,48 +19,72 @@ from fastapi import BackgroundTasks
 import logging.handlers
 from contextlib import asynccontextmanager
 
+# Import configuration validator
+from config_validator import validate_startup_config
+
 # Enhanced logging
 import logging.handlers
 
-# Create logs directory if it doesn't exist
-LOGS_DIR = "/var/log"
+# Validate configuration on startup
+validated_config = validate_startup_config()
+
+# Container-aware configuration - use validated values
+LOGS_DIR = validated_config['LOGS_DIR']
+DOWNLOADS_DIR = validated_config['DOWNLOADS_DIR']
+API_KEY_FILE = validated_config['API_KEY_FILE']
+PORT = int(validated_config['PORT'])
+
+# Create directories if they don't exist
 os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(API_KEY_FILE), exist_ok=True)
+
 LOG_FILE = os.path.join(LOGS_DIR, "ytdl_service.log")
 
-# Configure logging
+# Configure logging with container-specific settings
 logger = logging.getLogger("ytdl_service")
 logger.setLevel(logging.INFO)
 
 # Create formatters
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Console handler
+# Console handler (important for container logs)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-# File handler with rotation
-file_handler = logging.handlers.RotatingFileHandler(
-    LOG_FILE,
-    maxBytes=10*1024*1024,  # 10MB
-    backupCount=5,
-    encoding='utf-8'
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+# File handler with rotation (only if logs directory is writable)
+try:
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.info(f"File logging enabled: {LOG_FILE}")
+except (OSError, PermissionError) as e:
+    logger.warning(f"File logging disabled due to permission error: {e}")
 
 # Prevent propagation to root logger
 logger.propagate = False
 
-# Configuration
-DOWNLOADS_DIR = "/opt/ytdl_service/downloads"
-API_KEY_FILE = "/opt/ytdl_service/api_key.txt"
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+# Log configuration for debugging
+logger.info(f"Container configuration loaded:")
+logger.info(f"  DOWNLOADS_DIR: {DOWNLOADS_DIR}")
+logger.info(f"  LOGS_DIR: {LOGS_DIR}")
+logger.info(f"  API_KEY_FILE: {API_KEY_FILE}")
+logger.info(f"  PORT: {PORT}")
 
-# Add configuration for update check and cleanup
-YTDLP_UPDATE_INTERVAL = 24 * 60 * 60  # 24 hours in seconds
-CLEANUP_INTERVAL = 60 * 60  # 1 hour in seconds
-FILE_MAX_AGE = 24 * 60 * 60  # 24 hours in seconds
+# Add configuration for update check and cleanup - use validated config
+YTDLP_UPDATE_INTERVAL = int(validated_config['YTDLP_UPDATE_INTERVAL'])
+CLEANUP_INTERVAL = int(validated_config['CLEANUP_INTERVAL'])
+FILE_MAX_AGE = int(validated_config['FILE_MAX_AGE'])
+
+# Additional container configuration - use validated config
+YTDL_MAX_RETRIES = int(validated_config['YTDL_MAX_RETRIES'])
+YTDL_RETRY_DELAY = int(validated_config['YTDL_RETRY_DELAY'])
 
 last_update_check = 0
 last_update_status = None
@@ -81,26 +105,37 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Handle API key
+# Handle API key with container-aware logic
 def get_api_key():
+    # First check if API key is provided via validated configuration
+    env_api_key = validated_config.get('YTDL_SERVICE_API_KEY')
+    if env_api_key:
+        logger.info("Using API key from environment variable")
+        return env_api_key
+    
+    # If not in environment, try to read from file
     if not os.path.exists(API_KEY_FILE):
         try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(API_KEY_FILE), exist_ok=True)
             api_key = secrets.token_urlsafe(32)
             with open(API_KEY_FILE, "w") as f:
                 f.write(api_key)
             logger.info(f"Generated new API key file: {API_KEY_FILE}")
             return api_key
-        except IOError as e:
+        except (IOError, OSError, PermissionError) as e:
             logger.error(f"Error writing API key file {API_KEY_FILE}: {e}")
-            logger.warning("Failed to write API key file, using temporary key.")
+            logger.warning("Failed to write API key file, using temporary key for this session.")
             return secrets.token_urlsafe(32)
     else:
         try:
             with open(API_KEY_FILE, "r") as f:
-                return f.read().strip()
-        except IOError as e:
+                api_key = f.read().strip()
+                logger.info(f"Loaded API key from file: {API_KEY_FILE}")
+                return api_key
+        except (IOError, OSError, PermissionError) as e:
             logger.error(f"Error reading API key file {API_KEY_FILE}: {e}")
-            logger.warning("Failed to read API key file, using temporary key.")
+            logger.warning("Failed to read API key file, using temporary key for this session.")
             return secrets.token_urlsafe(32)
 
 API_KEY = get_api_key()
@@ -223,24 +258,85 @@ async def health_check():
             capture_output=True
         ).returncode == 0
         
+        # Check for yt-dlp availability
+        ytdlp_available = True
+        try:
+            yt_dlp.version.__version__
+        except Exception:
+            ytdlp_available = False
+        
         # Check for required directory permissions
-        write_permission = os.access(DOWNLOADS_DIR, os.W_OK)
-        read_permission = os.access(DOWNLOADS_DIR, os.R_OK)
+        downloads_write_permission = os.access(DOWNLOADS_DIR, os.W_OK)
+        downloads_read_permission = os.access(DOWNLOADS_DIR, os.R_OK)
+        logs_write_permission = os.access(LOGS_DIR, os.W_OK)
         
-        # Get current yt-dlp version without checking for updates
-        current_version = yt_dlp.version.__version__
+        # Check disk space for downloads directory
+        downloads_disk_usage = None
+        try:
+            statvfs = os.statvfs(DOWNLOADS_DIR)
+            free_bytes = statvfs.f_frsize * statvfs.f_bavail
+            total_bytes = statvfs.f_frsize * statvfs.f_blocks
+            used_bytes = total_bytes - free_bytes
+            downloads_disk_usage = {
+                "total_gb": round(total_bytes / (1024**3), 2),
+                "used_gb": round(used_bytes / (1024**3), 2),
+                "free_gb": round(free_bytes / (1024**3), 2),
+                "usage_percent": round((used_bytes / total_bytes) * 100, 1)
+            }
+        except Exception as e:
+            logger.warning(f"Could not get disk usage: {e}")
         
-        return {
-            "status": "healthy",
+        # Check API key file accessibility
+        api_key_accessible = os.path.exists(API_KEY_FILE) and os.access(API_KEY_FILE, os.R_OK)
+        
+        # Get current yt-dlp version
+        current_version = yt_dlp.version.__version__ if ytdlp_available else "unavailable"
+        
+        # Container-specific health indicators
+        container_health = {
             "ffmpeg_available": ffmpeg_available,
-            "yt_dlp_version": current_version,
-            "last_update_check": datetime.fromtimestamp(last_update_check).isoformat() if last_update_check else None,
-            "last_update_status": last_update_status,
-            "downloads_dir": DOWNLOADS_DIR,
-            "downloads_dir_writeable": write_permission,
-            "downloads_dir_readable": read_permission,
+            "ytdlp_available": ytdlp_available,
+            "api_key_accessible": api_key_accessible,
+            "downloads_dir_accessible": downloads_read_permission and downloads_write_permission,
+            "logs_dir_accessible": logs_write_permission,
+            "disk_space_ok": downloads_disk_usage["usage_percent"] < 90 if downloads_disk_usage else True
+        }
+        
+        # Overall health status
+        is_healthy = all(container_health.values())
+        
+        health_response = {
+            "status": "healthy" if is_healthy else "degraded",
+            "container_health": container_health,
+            "system_info": {
+                "yt_dlp_version": current_version,
+                "last_update_check": datetime.fromtimestamp(last_update_check).isoformat() if last_update_check else None,
+                "last_update_status": last_update_status,
+            },
+            "directories": {
+                "downloads_dir": DOWNLOADS_DIR,
+                "logs_dir": LOGS_DIR,
+                "api_key_file": API_KEY_FILE,
+                "downloads_dir_writeable": downloads_write_permission,
+                "downloads_dir_readable": downloads_read_permission,
+                "logs_dir_writeable": logs_write_permission,
+            },
+            "disk_usage": downloads_disk_usage,
+            "configuration": {
+                "port": PORT,
+                "max_retries": YTDL_MAX_RETRIES,
+                "retry_delay": YTDL_RETRY_DELAY,
+                "update_interval_hours": YTDLP_UPDATE_INTERVAL / 3600,
+                "cleanup_interval_hours": CLEANUP_INTERVAL / 3600,
+                "file_max_age_hours": FILE_MAX_AGE / 3600
+            },
             "timestamp": datetime.now().isoformat()
         }
+        
+        if not is_healthy:
+            logger.warning(f"Health check shows degraded status: {container_health}")
+        
+        return health_response
         
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -422,8 +518,8 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'format': clip_format if is_youtube_clips else 'best',
                 'outtmpl': output_template,
                 'restrictfilenames': True,
-                'retries': 3,
-                'fragment_retries': 3,
+                'retries': YTDL_MAX_RETRIES,
+                'fragment_retries': YTDL_MAX_RETRIES,
                 'socket_timeout': 30,
                 'ignoreerrors': False,
                 'geo_bypass': True,
@@ -706,8 +802,8 @@ async def download_video(request: DownloadRequest,
             'format': request.format or 'bestvideo+bestaudio/best',
             'outtmpl': output_template,
             'restrictfilenames': True,
-            'retries': 5,
-            'fragment_retries': 5,
+            'retries': YTDL_MAX_RETRIES,
+            'fragment_retries': YTDL_MAX_RETRIES,
             'socket_timeout': 60,
             'concurrent_fragment_downloads': 2,
             'max_downloads': 2,
@@ -803,8 +899,8 @@ async def download_video(request: DownloadRequest,
             'format': format_string,
             'outtmpl': output_template,
             'restrictfilenames': True,
-            'retries': 3,
-            'fragment_retries': 3,
+            'retries': YTDL_MAX_RETRIES,
+            'fragment_retries': YTDL_MAX_RETRIES,
             'socket_timeout': 60,
             'ignoreerrors': True,
             'geo_bypass': True,
@@ -1086,4 +1182,5 @@ async def list_downloads(api_key: str = Depends(verify_api_key)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info(f"Starting FastAPI server on port {PORT}")
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

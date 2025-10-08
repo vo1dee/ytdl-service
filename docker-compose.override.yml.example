@@ -17,6 +17,13 @@ services:
       - YTDL_SERVICE_API_KEY=dev-api-key-12345
       - TELEGRAM_BOT_TOKEN=your-telegram-bot-token-here
       - TELEGRAM_ERROR_CHAT_ID=your-error-chat-id-here
+      # Override maintenance intervals for development (shorter intervals)
+      - YTDLP_UPDATE_INTERVAL=3600  # 1 hour instead of 24 hours
+      - CLEANUP_INTERVAL=1800       # 30 minutes instead of 1 hour
+      - FILE_MAX_AGE=7200          # 2 hours instead of 24 hours
+      # Override retry configuration for development
+      - YTDL_MAX_RETRIES=5
+      - YTDL_RETRY_DELAY=2
     
     # Override volumes for development (optional)
     volumes:
@@ -33,3 +40,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    
+    # Development-specific resource limits (optional)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1G
+    #       cpus: '0.5'
+    #     reservations:
+    #       memory: 512M
+    #       cpus: '0.25'
