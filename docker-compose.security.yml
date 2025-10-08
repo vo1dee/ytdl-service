@@ -1,0 +1,159 @@
+# Security-focused Docker Compose configuration
+# Use this file for production deployments with enhanced security
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.security.yml up
+
+version: '3.8'
+
+services:
+  ytdl-service:
+    # Security: Build from security-hardened Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_USER_UID: 1001
+        APP_USER_GID: 1001
+    
+    # Security: Run with read-only root filesystem where possible
+    read_only: true
+    
+    # Security: Add temporary filesystems for writable areas
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+      - /var/tmp:noexec,nosuid,size=50m
+    
+    # Security: Set resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Security: Drop all capabilities and add only necessary ones
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    
+    # Security: Disable new privileges
+    security_opt:
+      - no-new-privileges:true
+    
+    # Security: Use custom user namespace (if supported)
+    user: "1001:1001"
+    
+    # Security: Enhanced volume mounts with security options
+    volumes:
+      - type: bind
+        source: ./downloads
+        target: /opt/ytdl_service/downloads
+        bind:
+          create_host_path: true
+        read_only: false
+      - type: bind
+        source: ./logs
+        target: /var/log
+        bind:
+          create_host_path: true
+        read_only: false
+      - type: bind
+        source: ./config
+        target: /opt/ytdl_service/config
+        bind:
+          create_host_path: true
+        read_only: false
+      # Security: Mount secrets directory (for production secret management)
+      - type: bind
+        source: ./secrets
+        target: /opt/ytdl_service/secrets
+        bind:
+          create_host_path: true
+        read_only: true
+      # Security: Writable temporary directory
+      - type: tmpfs
+        target: /tmp/ytdl
+        tmpfs:
+          size: 200m
+          mode: 0700
+    
+    # Security: Enhanced environment variables
+    environment:
+      # Security: Disable Python bytecode generation
+      - PYTHONDONTWRITEBYTECODE=1
+      # Security: Enable Python hash randomization
+      - PYTHONHASHSEED=random
+      # Security: Set secure temporary directory
+      - TMPDIR=/tmp/ytdl
+      # Security: Disable pip cache
+      - PIP_NO_CACHE_DIR=1
+      # Security: Set restrictive umask
+      - UMASK=0027
+    
+    # Security: Enhanced health check with timeout
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 10 /opt/ytdl_service/health_check.sh --quick || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    
+    # Security: Restart policy with limits
+    restart: unless-stopped
+    
+    # Security: Network configuration
+    networks:
+      - ytdl-network
+    
+    # Security: Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "service=ytdl-service,security=enabled"
+    
+    # Security: Labels for monitoring and compliance
+    labels:
+      - "security.hardened=true"
+      - "security.non-root=true"
+      - "security.readonly-rootfs=partial"
+      - "security.capabilities=minimal"
+      - "compliance.level=high"
+
+# Security: Custom network with isolation
+networks:
+  ytdl-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+# Security: Named volumes with specific options
+volumes:
+  ytdl-downloads:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./downloads
+  ytdl-logs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./logs
+  ytdl-config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./config

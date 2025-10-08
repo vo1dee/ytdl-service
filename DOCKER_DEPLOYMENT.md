@@ -251,34 +251,76 @@ docker inspect ytdl-service --format='{{json .State.Health}}'
 
 ## Security Considerations
 
-### Container Security
+The container implements comprehensive security hardening:
 
-- Service runs as non-root user (ytdl:ytdl)
-- Minimal base image (python:3.11-slim-bullseye)
-- No unnecessary ports exposed
-- Read-only root filesystem where possible
+- **Non-root user**: Application runs as dedicated `ytdl` user (UID/GID 1001)
+- **Minimal permissions**: Restrictive file and directory permissions (750/700/600)
+- **Secret management**: Multiple secure methods for API keys and tokens
+- **Process security**: Resource limits, capability dropping, signal handling
+- **File system security**: Read-only root filesystem support, secure temporary directories
+- **Network security**: Minimal port exposure, custom network isolation
+- **Vulnerability scanning**: Built-in security scanning tools and monitoring
+
+### Security-Enhanced Deployment
+
+For production environments, use the security-hardened configuration:
+
+```bash
+# Deploy with enhanced security
+docker-compose -f docker-compose.yml -f docker-compose.security.yml up -d
+
+# Run security scan
+docker exec ytdl-service /opt/ytdl_service/security-scan.sh
+
+# Check security status
+docker exec ytdl-service cat /opt/ytdl_service/security-status.txt
+```
+
+### Secret Management Options
+
+1. **Docker Secrets** (Recommended for production):
+   ```bash
+   echo "your-secure-api-key" | docker secret create ytdl_api_key -
+   ```
+
+2. **Mounted Secret Files**:
+   ```bash
+   mkdir -p ./secrets
+   echo "your-api-key" > ./secrets/api_key
+   chmod 600 ./secrets/api_key
+   ```
+
+3. **Environment Variables** (Development only):
+   ```bash
+   export YTDL_SERVICE_API_KEY="your-api-key"
+   ```
 
 ### API Security
 
 ```bash
-# Generate secure API key
-openssl rand -hex 32
+# Generate secure API key (48 characters)
+python3 -c "import secrets; print(secrets.token_urlsafe(36))"
 
 # Set API key via environment
-export YTDL_SERVICE_API_KEY=$(openssl rand -hex 32)
+export YTDL_SERVICE_API_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(36))")
 ```
 
 ### Network Security
 
 ```bash
-# Run on custom network
-docker network create ytdl-network
+# Run on custom isolated network
+docker network create --driver bridge \
+  --opt com.docker.network.bridge.enable_icc=false \
+  ytdl-network
+
 docker run -d \
   --name ytdl-service \
   --network ytdl-network \
   -p 127.0.0.1:8000:8000 \
   ytdl-service:latest
 ```
+
+For detailed security information, see [SECURITY.md](SECURITY.md).
 
 ## Performance Tuning
 

@@ -1,0 +1,98 @@
+# Security-focused Dockerfile for vulnerability scanning and hardened deployment
+# This Dockerfile extends the main Dockerfile with additional security measures
+# Use this for security scanning and production deployments
+
+FROM ytdl-service:latest AS security-scan
+
+# Switch to root temporarily for security hardening
+USER root
+
+# Security: Install security scanning tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Security scanning tools
+    lynis \
+    chkrootkit \
+    rkhunter \
+    # File integrity monitoring
+    aide \
+    # Network security
+    netcat-openbsd \
+    # Process monitoring
+    procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Security: Configure file integrity monitoring
+RUN aide --init && \
+    mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+
+# Security: Set up additional security configurations
+RUN echo "# Security hardening configurations" > /etc/security/limits.d/ytdl.conf && \
+    echo "ytdl soft nproc 100" >> /etc/security/limits.d/ytdl.conf && \
+    echo "ytdl hard nproc 200" >> /etc/security/limits.d/ytdl.conf && \
+    echo "ytdl soft nofile 1024" >> /etc/security/limits.d/ytdl.conf && \
+    echo "ytdl hard nofile 2048" >> /etc/security/limits.d/ytdl.conf
+
+# Security: Configure system security settings
+RUN echo "# Kernel security settings" > /etc/sysctl.d/99-security.conf && \
+    echo "kernel.dmesg_restrict = 1" >> /etc/sysctl.d/99-security.conf && \
+    echo "kernel.kptr_restrict = 2" >> /etc/sysctl.d/99-security.conf && \
+    echo "net.ipv4.conf.all.send_redirects = 0" >> /etc/sysctl.d/99-security.conf && \
+    echo "net.ipv4.conf.default.send_redirects = 0" >> /etc/sysctl.d/99-security.conf && \
+    echo "net.ipv4.conf.all.accept_redirects = 0" >> /etc/sysctl.d/99-security.conf && \
+    echo "net.ipv4.conf.default.accept_redirects = 0" >> /etc/sysctl.d/99-security.conf
+
+# Security: Remove unnecessary setuid/setgid binaries
+RUN find /usr/bin /usr/sbin /bin /sbin -perm /6000 -type f -exec ls -la {} \; && \
+    # Remove or modify permissions of potentially dangerous binaries
+    chmod u-s /usr/bin/passwd /usr/bin/chfn /usr/bin/chsh /usr/bin/newgrp 2>/dev/null || true
+
+# Security: Create security scan script
+RUN cat > /opt/ytdl_service/security-scan.sh << 'EOF'
+#!/bin/bash
+# Security scanning script for ytdl-service container
+
+echo "=== Container Security Scan ==="
+echo "Timestamp: $(date)"
+echo
+
+echo "1. Checking for rootkits..."
+chkrootkit --quiet || echo "Rootkit check completed with warnings"
+echo
+
+echo "2. Running system security audit..."
+lynis audit system --quiet --no-colors | grep -E "(Warning|Suggestion)" || echo "Lynis audit completed"
+echo
+
+echo "3. Checking file integrity..."
+aide --check --config=/etc/aide/aide.conf || echo "File integrity check completed"
+echo
+
+echo "4. Checking process permissions..."
+ps aux | grep -v "^root" | head -10
+echo
+
+echo "5. Checking network connections..."
+netstat -tuln 2>/dev/null || ss -tuln
+echo
+
+echo "6. Checking file permissions..."
+find /opt/ytdl_service -type f -perm /022 -ls 2>/dev/null | head -10
+echo
+
+echo "=== Security Scan Complete ==="
+EOF
+
+RUN chmod 750 /opt/ytdl_service/security-scan.sh && \
+    chown ytdl:ytdl /opt/ytdl_service/security-scan.sh
+
+# Security: Switch back to non-root user
+USER ytdl
+
+# Security: Add security scan labels
+LABEL security.scan.tools="lynis,chkrootkit,rkhunter,aide" \
+      security.scan.enabled="true" \
+      security.hardened="true"
+
+# Security: Override entrypoint to include security initialization
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/opt/ytdl_service/entrypoint.sh"]
