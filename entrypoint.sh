@@ -130,8 +130,11 @@ generate_api_key() {
             log_error "API key too short (minimum 32 characters required)"
             exit 1
         fi
-        echo "$YTDL_SERVICE_API_KEY" > "$API_KEY_FILE"
-        chmod 600 "$API_KEY_FILE"
+        if echo "$YTDL_SERVICE_API_KEY" > "$API_KEY_FILE" 2>/dev/null; then
+            chmod 600 "$API_KEY_FILE" 2>/dev/null || log_warning "Cannot set API key file permissions"
+        else
+            log_warning "Cannot write API key to file, keeping in environment variable"
+        fi
         log_success "API key written to file: $API_KEY_FILE"
         # Security: Clear environment variable after use
         unset YTDL_SERVICE_API_KEY
@@ -145,7 +148,7 @@ generate_api_key() {
             EXISTING_KEY=$(cat "$API_KEY_FILE" 2>/dev/null)
             if [[ ${#EXISTING_KEY} -ge 32 ]]; then
                 log "Using existing valid API key file: $API_KEY_FILE"
-                chmod 600 "$API_KEY_FILE"
+                chmod 600 "$API_KEY_FILE" 2>/dev/null || log_warning "Cannot set API key file permissions"
                 return
             else
                 log_warning "Existing API key is too short, generating new one"
@@ -172,10 +175,21 @@ print(key)
         exit 1
     fi
     
-    # Security: Write key with atomic operation
-    echo "$API_KEY" > "$API_KEY_FILE.tmp"
-    chmod 600 "$API_KEY_FILE.tmp"
-    mv "$API_KEY_FILE.tmp" "$API_KEY_FILE"
+    # For containerized environments, prefer environment variables over file storage
+    # This avoids permission issues with mounted volumes
+    export YTDL_SERVICE_API_KEY="$API_KEY"
+    log_success "Generated new API key and stored in environment variable"
+    log_warning "IMPORTANT: Your API key is: $API_KEY"
+    log_warning "Please save this key securely for API access"
+    log_warning "For production, use Docker secrets or mounted secret files"
+    
+    # Try to write to file as backup, but don't fail if it doesn't work
+    if echo "$API_KEY" > "$API_KEY_FILE" 2>/dev/null; then
+        chmod 600 "$API_KEY_FILE" 2>/dev/null || log_warning "Cannot set API key file permissions"
+        log_success "API key also saved to file: $API_KEY_FILE"
+    else
+        log_warning "Cannot write API key file (using environment variable only)"
+    fi
     
     log_success "Generated new API key and saved to: $API_KEY_FILE"
     log_warning "IMPORTANT: Your API key is: $API_KEY"
