@@ -66,11 +66,19 @@ create_directories() {
         log "Application directory already exists: $APP_DIR"
     fi
     
-    # Set proper permissions for ytdl user
+    # Set proper permissions for ytdl user (handle permission errors gracefully)
     if id "ytdl" &>/dev/null; then
-        chown -R ytdl:ytdl "$DOWNLOADS_DIR" "$LOGS_DIR" "$APP_DIR"
-        chmod -R 755 "$DOWNLOADS_DIR" "$LOGS_DIR" "$APP_DIR"
-        log_success "Set proper permissions for ytdl user"
+        # Try to change ownership, but don't fail if it doesn't work (mounted volumes)
+        chown -R ytdl:ytdl "$DOWNLOADS_DIR" 2>/dev/null || log_warning "Cannot change ownership of downloads directory (likely mounted volume)"
+        chown -R ytdl:ytdl "$LOGS_DIR" 2>/dev/null || log_warning "Cannot change ownership of logs directory (likely mounted volume)"
+        chown -R ytdl:ytdl "$APP_DIR" 2>/dev/null || log_warning "Cannot change ownership of app directory"
+        
+        # Try to set permissions, but don't fail if it doesn't work
+        chmod -R 755 "$DOWNLOADS_DIR" 2>/dev/null || log_warning "Cannot change permissions of downloads directory"
+        chmod -R 755 "$LOGS_DIR" 2>/dev/null || log_warning "Cannot change permissions of logs directory"
+        chmod -R 755 "$APP_DIR" 2>/dev/null || log_warning "Cannot change permissions of app directory"
+        
+        log_success "Attempted to set proper permissions for ytdl user"
     else
         log_warning "ytdl user not found, using current user permissions"
     fi
@@ -189,11 +197,11 @@ configure_logging() {
     
     touch "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE"
     
-    # Set proper permissions
+    # Set proper permissions (handle errors gracefully)
     if id "ytdl" &>/dev/null; then
-        chown ytdl:ytdl "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE"
+        chown ytdl:ytdl "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE" 2>/dev/null || log_warning "Cannot change ownership of log files"
     fi
-    chmod 644 "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE"
+    chmod 644 "$YTDL_LOG_FILE" "$ACCESS_LOG_FILE" "$ERROR_LOG_FILE" 2>/dev/null || log_warning "Cannot change permissions of log files"
     
     # Configure log rotation (user-level setup since we don't have root access)
     # Create a local logrotate configuration
