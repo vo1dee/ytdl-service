@@ -130,31 +130,20 @@ generate_api_key() {
             log_error "API key too short (minimum 32 characters required)"
             exit 1
         fi
-        if echo "$YTDL_SERVICE_API_KEY" > "$API_KEY_FILE" 2>/dev/null; then
-            chmod 600 "$API_KEY_FILE" 2>/dev/null || log_warning "Cannot set API key file permissions"
-        else
-            log_warning "Cannot write API key to file, keeping in environment variable"
-        fi
-        log_success "API key written to file: $API_KEY_FILE"
-        # Security: Clear environment variable after use
-        unset YTDL_SERVICE_API_KEY
+        log_success "API key validated and ready for use"
+        # Keep the API key in environment variable for the service to use
         return
     fi
     
     # If API key file already exists, validate and use it
-    if [ -f "$API_KEY_FILE" ]; then
-        # Security: Validate existing API key
-        if [ -r "$API_KEY_FILE" ]; then
-            EXISTING_KEY=$(cat "$API_KEY_FILE" 2>/dev/null)
-            if [[ ${#EXISTING_KEY} -ge 32 ]]; then
-                log "Using existing valid API key file: $API_KEY_FILE"
-                chmod 600 "$API_KEY_FILE" 2>/dev/null || log_warning "Cannot set API key file permissions"
-                return
-            else
-                log_warning "Existing API key is too short, generating new one"
-            fi
+    if [ -f "$API_KEY_FILE" ] && [ -r "$API_KEY_FILE" ]; then
+        EXISTING_KEY=$(cat "$API_KEY_FILE" 2>/dev/null)
+        if [[ ${#EXISTING_KEY} -ge 32 ]]; then
+            log "Using existing valid API key file: $API_KEY_FILE"
+            export YTDL_SERVICE_API_KEY="$EXISTING_KEY"
+            return
         else
-            log_warning "Cannot read existing API key file, generating new one"
+            log_warning "Existing API key is too short, generating new one"
         fi
     fi
     
