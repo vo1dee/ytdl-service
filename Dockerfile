@@ -87,7 +87,6 @@ RUN mkdir -p /opt/ytdl_service/downloads \
 
 # Copy application code
 COPY --chown=ytdl:ytdl download_service.py /opt/ytdl_service/app/
-COPY --chown=ytdl:ytdl video_downloader.py /opt/ytdl_service/app/
 
 # Copy all Python files to ensure we get any additional modules
 COPY --chown=ytdl:ytdl *.py /opt/ytdl_service/app/
