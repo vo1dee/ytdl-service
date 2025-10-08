@@ -3,7 +3,7 @@
 # Security Configuration Script for YouTube Download Service
 # This script implements additional security hardening measures
 
-set -e
+# Note: Don't use 'set -e' here as we need to handle permission errors gracefully
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,19 +38,19 @@ configure_filesystem_security() {
     
     # Create secure temporary directory
     if [ ! -d "/tmp/ytdl" ]; then
-        mkdir -p /tmp/ytdl
-        chmod 700 /tmp/ytdl
+        mkdir -p /tmp/ytdl 2>/dev/null || log_warning "Cannot create temp directory"
+        chmod 700 /tmp/ytdl 2>/dev/null || log_warning "Cannot set temp directory permissions"
     fi
     
-    # Set proper permissions on application directories
-    find /opt/ytdl_service -type d -exec chmod 750 {} \; 2>/dev/null || true
-    find /opt/ytdl_service -type f -name "*.py" -exec chmod 640 {} \; 2>/dev/null || true
-    find /opt/ytdl_service -type f -name "*.sh" -exec chmod 750 {} \; 2>/dev/null || true
+    # Set proper permissions on application directories (handle errors gracefully)
+    find /opt/ytdl_service -type d -exec chmod 750 {} \; 2>/dev/null || log_warning "Cannot change directory permissions"
+    find /opt/ytdl_service -type f -name "*.py" -exec chmod 640 {} \; 2>/dev/null || log_warning "Cannot change Python file permissions"
+    find /opt/ytdl_service -type f -name "*.sh" -exec chmod 750 {} \; 2>/dev/null || log_warning "Cannot change shell script permissions"
     
-    # Secure config directory
+    # Secure config directory (handle permission errors gracefully)
     if [ -d "/opt/ytdl_service/config" ]; then
-        chmod 700 /opt/ytdl_service/config
-        find /opt/ytdl_service/config -type f -exec chmod 600 {} \; 2>/dev/null || true
+        chmod 700 /opt/ytdl_service/config 2>/dev/null || log_warning "Cannot change config directory permissions (likely mounted volume)"
+        find /opt/ytdl_service/config -type f -exec chmod 600 {} \; 2>/dev/null || log_warning "Cannot change config file permissions"
     fi
     
     log_success "File system security configured"
