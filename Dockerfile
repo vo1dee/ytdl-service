@@ -70,9 +70,11 @@ RUN mkdir -p /opt/ytdl_service/app/modules && \
     touch /opt/ytdl_service/app/modules/__init__.py && \
     chown -R ytdl:ytdl /opt/ytdl_service/app/modules
 
-# Copy entrypoint script
+# Copy entrypoint and health check scripts
 COPY --chown=ytdl:ytdl entrypoint.sh /opt/ytdl_service/
-RUN chmod +x /opt/ytdl_service/entrypoint.sh
+COPY --chown=ytdl:ytdl health_check.sh /opt/ytdl_service/
+RUN chmod +x /opt/ytdl_service/entrypoint.sh && \
+    chmod +x /opt/ytdl_service/health_check.sh
 
 # Switch to non-root user
 USER ytdl
@@ -88,9 +90,9 @@ ENV PYTHONPATH="/opt/ytdl_service/app:$PYTHONPATH" \
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+# Health check using our comprehensive health check script
+HEALTHCHECK --interval=30s --timeout=15s --start-period=10s --retries=3 \
+    CMD /opt/ytdl_service/health_check.sh --quick || exit 1
 
 # Set entrypoint
 ENTRYPOINT ["/opt/ytdl_service/entrypoint.sh"]

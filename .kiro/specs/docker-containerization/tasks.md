@@ -55,20 +55,31 @@
 
 
 
+
   - Write .env.example file with all configurable environment variables
   - Create docker-compose.override.yml.example for development customization
   - Document environment variable descriptions and default values
   - Add validation for required environment variables in application startup
   - _Requirements: 3.1, 3.2, 3.3, 4.2, 4.3_
 
-- [ ] 6. Implement Docker build and run scripts
+- [x] 6. Implement Docker build and run scripts
+
+
+
+
+
   - Create build.sh script for building Docker image with proper tagging
   - Write run.sh script for running container with volume mounts and environment setup
   - Add stop.sh script for graceful container shutdown
   - Create logs.sh script for viewing container logs
   - _Requirements: 4.1, 4.2, 5.2_
 
-- [ ] 7. Add container health monitoring
+- [x] 7. Add container health monitoring
+
+
+
+
+
   - Enhance /health endpoint to include container-specific health checks
   - Add disk space monitoring for download directory
   - Implement service dependency checks (yt-dlp, FFmpeg availability)

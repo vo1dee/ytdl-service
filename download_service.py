@@ -252,89 +252,255 @@ async def periodic_tasks():
 async def health_check():
     # Public endpoint, no API key required
     try:
-        # Check for ffmpeg
-        ffmpeg_available = subprocess.run(
-            ["which", "ffmpeg"],
-            capture_output=True
-        ).returncode == 0
-        
-        # Check for yt-dlp availability
-        ytdlp_available = True
+        # Enhanced dependency checks with version information
+        ffmpeg_available = False
+        ffmpeg_version = None
         try:
-            yt_dlp.version.__version__
-        except Exception:
-            ytdlp_available = False
+            ffmpeg_result = subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            ffmpeg_available = ffmpeg_result.returncode == 0
+            if ffmpeg_available:
+                # Extract version from first line
+                first_line = ffmpeg_result.stdout.split('\n')[0]
+                if 'version' in first_line:
+                    ffmpeg_version = first_line.split('version')[1].split()[0]
+        except Exception as e:
+            logger.warning(f"FFmpeg check failed: {e}")
         
-        # Check for required directory permissions
+        # Enhanced yt-dlp availability check
+        ytdlp_available = False
+        ytdlp_version = None
+        ytdlp_functional = False
+        try:
+            ytdlp_version = yt_dlp.version.__version__
+            ytdlp_available = True
+            
+            # Test yt-dlp functionality with a simple extraction
+            test_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'simulate': True
+            }
+            with yt_dlp.YoutubeDL(test_opts) as ydl:
+                # Test with a simple YouTube URL (doesn't actually download)
+                test_info = ydl.extract_info('https://www.youtube.com/watch?v=dQw4w9WgXcQ', download=False)
+                ytdlp_functional = test_info is not None
+        except Exception as e:
+            logger.warning(f"yt-dlp functionality test failed: {e}")
+        
+        # Enhanced directory permission checks
         downloads_write_permission = os.access(DOWNLOADS_DIR, os.W_OK)
         downloads_read_permission = os.access(DOWNLOADS_DIR, os.R_OK)
+        downloads_exists = os.path.exists(DOWNLOADS_DIR)
         logs_write_permission = os.access(LOGS_DIR, os.W_OK)
+        logs_exists = os.path.exists(LOGS_DIR)
         
-        # Check disk space for downloads directory
+        # Enhanced disk space monitoring for both downloads and logs
         downloads_disk_usage = None
+        logs_disk_usage = None
+        
         try:
-            statvfs = os.statvfs(DOWNLOADS_DIR)
-            free_bytes = statvfs.f_frsize * statvfs.f_bavail
-            total_bytes = statvfs.f_frsize * statvfs.f_blocks
-            used_bytes = total_bytes - free_bytes
-            downloads_disk_usage = {
-                "total_gb": round(total_bytes / (1024**3), 2),
-                "used_gb": round(used_bytes / (1024**3), 2),
-                "free_gb": round(free_bytes / (1024**3), 2),
-                "usage_percent": round((used_bytes / total_bytes) * 100, 1)
-            }
+            # Downloads directory disk usage
+            if downloads_exists:
+                statvfs = os.statvfs(DOWNLOADS_DIR)
+                free_bytes = statvfs.f_frsize * statvfs.f_bavail
+                total_bytes = statvfs.f_frsize * statvfs.f_blocks
+                used_bytes = total_bytes - free_bytes
+                downloads_disk_usage = {
+                    "total_gb": round(total_bytes / (1024**3), 2),
+                    "used_gb": round(used_bytes / (1024**3), 2),
+                    "free_gb": round(free_bytes / (1024**3), 2),
+                    "usage_percent": round((used_bytes / total_bytes) * 100, 1),
+                    "available_mb": round(free_bytes / (1024**2), 2)
+                }
+            
+            # Logs directory disk usage (may be on different filesystem)
+            if logs_exists:
+                logs_statvfs = os.statvfs(LOGS_DIR)
+                logs_free_bytes = logs_statvfs.f_frsize * logs_statvfs.f_bavail
+                logs_total_bytes = logs_statvfs.f_frsize * logs_statvfs.f_blocks
+                logs_used_bytes = logs_total_bytes - logs_free_bytes
+                logs_disk_usage = {
+                    "total_gb": round(logs_total_bytes / (1024**3), 2),
+                    "used_gb": round(logs_used_bytes / (1024**3), 2),
+                    "free_gb": round(logs_free_bytes / (1024**3), 2),
+                    "usage_percent": round((logs_used_bytes / logs_total_bytes) * 100, 1),
+                    "available_mb": round(logs_free_bytes / (1024**2), 2)
+                }
         except Exception as e:
             logger.warning(f"Could not get disk usage: {e}")
         
+        # System resource monitoring
+        system_resources = {}
+        try:
+            # Memory usage
+            import psutil
+            memory = psutil.virtual_memory()
+            system_resources["memory"] = {
+                "total_gb": round(memory.total / (1024**3), 2),
+                "available_gb": round(memory.available / (1024**3), 2),
+                "used_percent": memory.percent,
+                "free_gb": round(memory.free / (1024**3), 2)
+            }
+            
+            # CPU usage
+            cpu_percent = psutil.cpu_percent(interval=1)
+            system_resources["cpu"] = {
+                "usage_percent": cpu_percent,
+                "count": psutil.cpu_count(),
+                "load_average": os.getloadavg() if hasattr(os, 'getloadavg') else None
+            }
+            
+            # Process information
+            current_process = psutil.Process()
+            system_resources["process"] = {
+                "pid": current_process.pid,
+                "memory_mb": round(current_process.memory_info().rss / (1024**2), 2),
+                "cpu_percent": current_process.cpu_percent(),
+                "threads": current_process.num_threads(),
+                "open_files": len(current_process.open_files()),
+                "connections": len(current_process.connections())
+            }
+        except ImportError:
+            logger.warning("psutil not available for system resource monitoring")
+        except Exception as e:
+            logger.warning(f"System resource monitoring failed: {e}")
+        
+        # Process health checks
+        process_health = {}
+        try:
+            # Check if current process is healthy
+            current_pid = os.getpid()
+            process_health["current_process"] = {
+                "pid": current_pid,
+                "running": True  # If we're here, we're running
+            }
+            
+            # Check for other related processes
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        cmdline = ' '.join(proc.info['cmdline'] or [])
+                        if 'video_downloader.py' in cmdline:
+                            process_health["telegram_bot"] = {
+                                "pid": proc.info['pid'],
+                                "running": True
+                            }
+                            break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                else:
+                    process_health["telegram_bot"] = {
+                        "pid": None,
+                        "running": False
+                    }
+            except ImportError:
+                pass
+        except Exception as e:
+            logger.warning(f"Process health check failed: {e}")
+        
         # Check API key file accessibility
         api_key_accessible = os.path.exists(API_KEY_FILE) and os.access(API_KEY_FILE, os.R_OK)
+        api_key_from_env = bool(validated_config.get('YTDL_SERVICE_API_KEY'))
         
-        # Get current yt-dlp version
-        current_version = yt_dlp.version.__version__ if ytdlp_available else "unavailable"
+        # Network connectivity test
+        network_health = {}
+        try:
+            # Test DNS resolution
+            import socket
+            socket.gethostbyname('www.youtube.com')
+            network_health["dns_resolution"] = True
+            
+            # Test HTTP connectivity
+            import urllib.request
+            urllib.request.urlopen('https://www.youtube.com', timeout=5)
+            network_health["http_connectivity"] = True
+        except Exception as e:
+            network_health["dns_resolution"] = False
+            network_health["http_connectivity"] = False
+            logger.warning(f"Network connectivity test failed: {e}")
         
         # Container-specific health indicators
         container_health = {
             "ffmpeg_available": ffmpeg_available,
             "ytdlp_available": ytdlp_available,
-            "api_key_accessible": api_key_accessible,
-            "downloads_dir_accessible": downloads_read_permission and downloads_write_permission,
-            "logs_dir_accessible": logs_write_permission,
-            "disk_space_ok": downloads_disk_usage["usage_percent"] < 90 if downloads_disk_usage else True
+            "ytdlp_functional": ytdlp_functional,
+            "api_key_accessible": api_key_accessible or api_key_from_env,
+            "downloads_dir_accessible": downloads_exists and downloads_read_permission and downloads_write_permission,
+            "logs_dir_accessible": logs_exists and logs_write_permission,
+            "disk_space_ok": (downloads_disk_usage["usage_percent"] < 90 if downloads_disk_usage else True) and 
+                           (logs_disk_usage["usage_percent"] < 95 if logs_disk_usage else True),
+            "network_connectivity": network_health.get("http_connectivity", False),
+            "dns_resolution": network_health.get("dns_resolution", False)
         }
         
-        # Overall health status
-        is_healthy = all(container_health.values())
+        # Critical vs non-critical health checks
+        critical_checks = [
+            "ffmpeg_available",
+            "ytdlp_available", 
+            "downloads_dir_accessible",
+            "disk_space_ok"
+        ]
+        
+        critical_healthy = all(container_health[check] for check in critical_checks)
+        overall_healthy = all(container_health.values())
+        
+        # Determine status
+        if critical_healthy and overall_healthy:
+            status = "healthy"
+        elif critical_healthy:
+            status = "degraded"
+        else:
+            status = "unhealthy"
         
         health_response = {
-            "status": "healthy" if is_healthy else "degraded",
+            "status": status,
             "container_health": container_health,
             "system_info": {
-                "yt_dlp_version": current_version,
+                "yt_dlp_version": ytdlp_version or "unavailable",
+                "ffmpeg_version": ffmpeg_version or "unavailable",
+                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                 "last_update_check": datetime.fromtimestamp(last_update_check).isoformat() if last_update_check else None,
                 "last_update_status": last_update_status,
+                "uptime_seconds": time.time() - (last_update_check or time.time())
             },
             "directories": {
                 "downloads_dir": DOWNLOADS_DIR,
                 "logs_dir": LOGS_DIR,
                 "api_key_file": API_KEY_FILE,
+                "downloads_dir_exists": downloads_exists,
                 "downloads_dir_writeable": downloads_write_permission,
                 "downloads_dir_readable": downloads_read_permission,
+                "logs_dir_exists": logs_exists,
                 "logs_dir_writeable": logs_write_permission,
             },
-            "disk_usage": downloads_disk_usage,
+            "disk_usage": {
+                "downloads": downloads_disk_usage,
+                "logs": logs_disk_usage
+            },
+            "system_resources": system_resources,
+            "process_health": process_health,
+            "network_health": network_health,
             "configuration": {
                 "port": PORT,
                 "max_retries": YTDL_MAX_RETRIES,
                 "retry_delay": YTDL_RETRY_DELAY,
                 "update_interval_hours": YTDLP_UPDATE_INTERVAL / 3600,
                 "cleanup_interval_hours": CLEANUP_INTERVAL / 3600,
-                "file_max_age_hours": FILE_MAX_AGE / 3600
+                "file_max_age_hours": FILE_MAX_AGE / 3600,
+                "api_key_source": "environment" if api_key_from_env else "file"
             },
             "timestamp": datetime.now().isoformat()
         }
         
-        if not is_healthy:
-            logger.warning(f"Health check shows degraded status: {container_health}")
+        if not overall_healthy:
+            logger.warning(f"Health check shows {status} status: {container_health}")
         
         return health_response
         

@@ -20,11 +20,11 @@ services:
       - API_KEY_FILE=/opt/ytdl_service/config/api_key.txt
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "/opt/ytdl_service/health_check.sh", "--quick"]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
-      start_period: 40s
+      start_period: 45s
     networks:
       - ytdl-network
 
