@@ -654,10 +654,26 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     is_youtube_clips = "youtube.com/clip" in request.url
     is_youtube = any(x in request.url for x in ["youtube.com", "youtu.be"])
     
+    # Normalize Shorts URLs to standard watch URLs to improve extractor reliability
+    def normalize_youtube_url(original_url: str) -> str:
+        try:
+            if "youtube.com/shorts/" in original_url:
+                # Extract the video ID between /shorts/ and the next delimiter
+                after = original_url.split("/shorts/")[1]
+                video_id = after.split("?")[0].split("&")[0].split("/")[0]
+                return f"https://www.youtube.com/watch?v={video_id}"
+            return original_url
+        except Exception:
+            return original_url
+    
+    target_url = normalize_youtube_url(request.url)
+    
     if not is_youtube:
         return None  # Not YouTube, use regular download
     
     logger.info(f"🎬 YouTube download detected: {request.url}")
+    if target_url != request.url:
+        logger.info(f"   Normalized URL for extraction: {target_url}")
     logger.info(f"   Type: {'Shorts' if is_youtube_shorts else 'Clips' if is_youtube_clips else 'Regular'}")
     
     # Special handling for YouTube clips - Explicit format selection
@@ -741,8 +757,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 'progress_hooks': [download_progress_hook],
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android', 'web'],  # Try android first as it's more reliable for clips
-                        'skip': ['hls'],  # Only skip HLS, allow DASH for higher quality
+                        'player_client': ['ios', 'android', 'web'],  # Try multiple clients for broader support
                         'noplaylist': True,  # Ensure we don't try to download playlists
                         'quiet': False,
                         'no_warnings': False,
@@ -804,8 +819,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                 },
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['ios'],
-                        'skip': ['hls']
+                        'player_client': ['ios']
                     }
                 }
             }
@@ -824,7 +838,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             if i == 1 and is_youtube_clips:
                 try:
                     with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl_info:
-                        info_dict = ydl_info.extract_info(request.url, download=False)
+                        info_dict = ydl_info.extract_info(target_url, download=False)
                         if 'formats' in info_dict:
                             logger.info("Available formats for clip:")
                             
@@ -853,7 +867,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                             test_opts['quiet'] = True
                             try:
                                 with yt_dlp.YoutubeDL(test_opts) as test_ydl:
-                                    test_info = test_ydl.extract_info(request.url, download=False)
+                                    test_info = test_ydl.extract_info(target_url, download=False)
                                     if 'requested_formats' in test_info:
                                         logger.info("Format selector would choose:")
                                         for rf in test_info['requested_formats']:
@@ -873,7 +887,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract info first to see what will be downloaded
-                info = ydl.extract_info(request.url, download=False)
+                info = ydl.extract_info(target_url, download=False)
                 
                 # Log what format will be selected
                 if 'requested_formats' in info:
@@ -886,7 +900,7 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     logger.info(f"Will download single format: {info.get('format_id')} - {info.get('resolution')}")
                 
                 # Now perform the actual download
-                info = ydl.extract_info(request.url, download=True)
+                info = ydl.extract_info(target_url, download=True)
             
             if info:
                 logger.info(f"✅ YouTube strategy '{strategy['name']}' succeeded!")
