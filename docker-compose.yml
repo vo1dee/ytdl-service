@@ -6,7 +6,7 @@ services:
       - "${EXTERNAL_PORT:-8000}:${PORT:-8000}"
     volumes:
       - ${DOWNLOADS_HOST_PATH:-./downloads}:/opt/ytdl_service/downloads:rw
-      - ${LOGS_HOST_PATH:-./logs}:/var/log:rw
+      - ${LOGS_HOST_PATH:-./logs}:/opt/ytdl_service/logs:rw
       - ${CONFIG_HOST_PATH:-./config}:/opt/ytdl_service/config:rw
     environment:
       - YTDL_SERVICE_URL=${YTDL_SERVICE_URL:-http://localhost:8000}
@@ -14,7 +14,7 @@ services:
       - YTDL_MAX_RETRIES=${YTDL_MAX_RETRIES:-3}
       - YTDL_RETRY_DELAY=${YTDL_RETRY_DELAY:-1}
       - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/opt/ytdl_service/downloads}
-      - LOGS_DIR=${LOGS_DIR:-/var/log}
+      - LOGS_DIR=${LOGS_DIR:-/opt/ytdl_service/logs}
       - API_KEY_FILE=${API_KEY_FILE:-/opt/ytdl_service/config/api_key.txt}
       - YTDL_SERVICE_API_KEY=${YTDL_SERVICE_API_KEY}
       - SECURITY_HARDENING=${SECURITY_HARDENING:-false}

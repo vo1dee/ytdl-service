@@ -364,7 +364,7 @@ async def health_check():
                 "cpu_percent": current_process.cpu_percent(),
                 "threads": current_process.num_threads(),
                 "open_files": len(current_process.open_files()),
-                "connections": len(current_process.connections())
+                "connections": len(current_process.net_connections())
             }
         except ImportError:
             logger.warning("psutil not available for system resource monitoring")
