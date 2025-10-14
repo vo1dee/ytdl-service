@@ -12,6 +12,7 @@ services:
     environment:
       - YTDL_SERVICE_URL=${YTDL_SERVICE_URL:-http://localhost:8000}
       - PORT=${PORT:-8000}
+      - YTDLP_UPDATE_INTERVAL=${YTDLP_UPDATE_INTERVAL:-31536000}
       - YTDL_MAX_RETRIES=${YTDL_MAX_RETRIES:-3}
       - YTDL_RETRY_DELAY=${YTDL_RETRY_DELAY:-1}
       - DOWNLOADS_DIR=${DOWNLOADS_DIR:-/opt/ytdl_service/downloads}

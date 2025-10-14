@@ -8,7 +8,7 @@ set -e
 
 # Configuration from environment variables
 DOWNLOADS_DIR="${DOWNLOADS_DIR:-/opt/ytdl_service/downloads}"
-LOGS_DIR="${LOGS_DIR:-/var/log}"
+LOGS_DIR="${LOGS_DIR:-/opt/ytdl_service/logs}"
 API_KEY_FILE="${API_KEY_FILE:-/opt/ytdl_service/api_key.txt}"
 PORT="${PORT:-8000}"
 YTDL_SERVICE_API_KEY="${YTDL_SERVICE_API_KEY:-}"
@@ -345,10 +345,16 @@ validate_environment_security() {
     done
     
     # Security: Check umask
-    CURRENT_UMASK=$(umask)
-    if [ "$CURRENT_UMASK" != "0027" ] && [ "$CURRENT_UMASK" != "0022" ]; then
-        log_warning "Unusual umask: $CURRENT_UMASK (setting to 0027)"
-        umask 0027
+    # Honor UMASK from env if provided; otherwise keep secure default 0027
+    if [ -n "$UMASK" ]; then
+        log "Applying UMASK from environment: $UMASK"
+        umask "$UMASK" || log_warning "Failed to apply UMASK=$UMASK"
+    else
+        CURRENT_UMASK=$(umask)
+        if [ "$CURRENT_UMASK" != "0027" ] && [ "$CURRENT_UMASK" != "0022" ]; then
+            log_warning "Unusual umask: $CURRENT_UMASK (setting to 0027)"
+            umask 0027
+        fi
     fi
     
     log_success "Environment security validation completed"
