@@ -79,6 +79,8 @@ logger.info(f"  PORT: {PORT}")
 
 # Add configuration for update check and cleanup - use validated config
 YTDLP_UPDATE_INTERVAL = int(validated_config['YTDLP_UPDATE_INTERVAL'])
+# Optional flag to disable runtime yt-dlp updates in containerized deployments
+YTDLP_DISABLE_UPDATE = str(validated_config.get('YTDLP_DISABLE_UPDATE', 'false')).lower() in ('1', 'true', 'yes')
 CLEANUP_INTERVAL = int(validated_config['CLEANUP_INTERVAL'])
 FILE_MAX_AGE = int(validated_config['FILE_MAX_AGE'])
 
@@ -227,8 +229,8 @@ async def periodic_tasks():
         try:
             current_time = time.time()
             
-            # Check for yt-dlp updates
-            if current_time - last_update_check >= YTDLP_UPDATE_INTERVAL:
+            # Check for yt-dlp updates (unless explicitly disabled)
+            if not YTDLP_DISABLE_UPDATE and current_time - last_update_check >= YTDLP_UPDATE_INTERVAL:
                 logger.info("Running periodic yt-dlp update check")
                 was_updated, version = check_and_update_ytdlp()
                 last_update_check = current_time
@@ -238,6 +240,13 @@ async def periodic_tasks():
                     "timestamp": datetime.now().isoformat()
                 }
                 logger.info(f"yt-dlp update check completed: {last_update_status}")
+            elif YTDLP_DISABLE_UPDATE:
+                last_update_status = {
+                    "was_updated": False,
+                    "version": yt_dlp.version.__version__,
+                    "timestamp": datetime.now().isoformat(),
+                    "disabled": True
+                }
             
             # Run cleanup
             await cleanup_old_files()
