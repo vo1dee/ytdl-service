@@ -2,6 +2,7 @@ services:
   ytdl-service:
     build: .
     container_name: ytdl-service
+    user: "${PUID:-1001}:${PGID:-1001}"
     ports:
       - "${EXTERNAL_PORT:-8000}:${PORT:-8000}"
     volumes:
@@ -18,7 +19,9 @@ services:
       - API_KEY_FILE=${API_KEY_FILE:-/opt/ytdl_service/config/api_key.txt}
       - YTDL_SERVICE_API_KEY=${YTDL_SERVICE_API_KEY}
       - SECURITY_HARDENING=${SECURITY_HARDENING:-false}
-      - UMASK=${UMASK:-0022}
+      - PUID=${PUID:-1001}
+      - PGID=${PGID:-1001}
+      - UMASK=${UMASK:-0002}
       - DEBUG=${DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     restart: unless-stopped
