@@ -705,10 +705,13 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
     else:
         clip_format = None
     
-    # Define working strategies - Simplified for clips
+    # Track the last error for better diagnostics
+    last_error = None
+
+    # Define working strategies - first uses yt-dlp defaults (no forced player_client)
     strategies = [
         {
-            'name': 'Direct format download (best for clips)',
+            'name': 'Default client selection (yt-dlp defaults)',
             'opts': {
                 'format': clip_format if is_youtube_clips else 'best',
                 'outtmpl': output_template,
@@ -947,17 +950,26 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
                     logger.error(f"Downloaded file not found for strategy: {strategy['name']}")
                     
         except yt_dlp.utils.DownloadError as e:
-            logger.warning(f"❌ YouTube strategy '{strategy['name']}' failed: {str(e)}")
+            last_error = str(e)
+            logger.warning(f"❌ YouTube strategy '{strategy['name']}' failed: {last_error}")
             cleanup_files(download_id)
         except Exception as e:
-            logger.error(f"❌ YouTube strategy '{strategy['name']}' error: {str(e)}")
+            last_error = str(e)
+            logger.error(f"❌ YouTube strategy '{strategy['name']}' error: {last_error}")
             cleanup_files(download_id)
-    
-    # All strategies failed
+
+    # All strategies failed - include last yt-dlp error for diagnostics
     logger.error(f"❌ All YouTube strategies failed for: {request.url}")
+    error_msg = "All YouTube strategies failed"
+    if last_error:
+        # Extract the ERROR: line if present
+        if "ERROR:" in last_error:
+            error_msg = last_error.split("ERROR:")[-1].strip()
+        else:
+            error_msg = f"All YouTube strategies failed: {last_error}"
     return {
         "success": False,
-        "error": "All YouTube strategies failed",
+        "error": error_msg,
         "error_type": "youtube_extraction_failed"
     }
     
