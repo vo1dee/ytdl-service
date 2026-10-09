@@ -1,6 +1,6 @@
 # Multi-stage Docker build for YouTube Download Service
 # Stage 1: Builder - Install build dependencies and compile requirements
-FROM python:3.11-slim-bullseye AS builder
+FROM python:3.11-slim-bookworm AS builder
 
 # Set build arguments for security
 ARG DEBIAN_FRONTEND=noninteractive
@@ -35,7 +35,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Runtime - Create final image with minimal dependencies
-FROM python:3.11-slim-bullseye AS runtime
+FROM python:3.11-slim-bookworm AS runtime
+
+# Deno: yt-dlp needs a JS runtime to solve YouTube's player challenges
+COPY --from=denoland/deno:bin-2.9.7 /deno /usr/local/bin/deno
 
 # Set build arguments for security
 ARG DEBIAN_FRONTEND=noninteractive
