@@ -16,6 +16,7 @@ import pkg_resources
 import sys
 import asyncio
 from fastapi import BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 import logging.handlers
 from contextlib import asynccontextmanager
 
@@ -470,6 +471,9 @@ async def health_check():
         
         health_response = {
             "status": status,
+            # Lets clients check for a feature before sending a request that an
+            # older deployment would silently treat as a video download.
+            "capabilities": {"audio_only": True},
             "container_health": container_health,
             "system_info": {
                 "yt_dlp_version": ytdlp_version or "unavailable",
@@ -957,6 +961,96 @@ def download_youtube_video(request: DownloadRequest, download_id: str, output_te
         "error_type": "youtube_extraction_failed"
     }
     
+def download_audio(request: DownloadRequest, download_id: str):
+    """Download a track as MP3 (audio_only requests).
+
+    Accepts a direct URL or a yt-dlp search query such as "ytsearch1:artist - song".
+    """
+    logger.info(f"🎵 Audio download requested: {request.url}")
+
+    base_opts = {
+        'outtmpl': os.path.join(DOWNLOADS_DIR, f'{download_id}.%(ext)s'),
+        'restrictfilenames': True,
+        'noplaylist': True,
+        'retries': YTDL_MAX_RETRIES,
+        'fragment_retries': YTDL_MAX_RETRIES,
+        'socket_timeout': 30,
+        'ignoreerrors': False,
+        'geo_bypass': True,
+        'nocheckcertificate': True,
+        'quiet': False,
+        'no_warnings': False,
+        'writethumbnail': True,
+        'postprocessors': [
+            {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '0'},
+            {'key': 'FFmpegMetadata', 'add_metadata': True},
+            {'key': 'EmbedThumbnail', 'already_have_thumbnail': False},
+        ],
+    }
+
+    # Same idea as the video strategies: yt-dlp's own client selection first,
+    # then the clients that have worked for this service before. The last one
+    # takes a muxed video format, which still yields an MP3 after extraction.
+    strategies = [
+        {'name': 'Default clients (bestaudio)', 'format': 'bestaudio/best', 'clients': None},
+        {'name': 'iOS/Android/Web clients (bestaudio)', 'format': 'bestaudio/best', 'clients': ['ios', 'android', 'web']},
+        {'name': 'Web client (best muxed)', 'format': 'best', 'clients': ['web']},
+    ]
+
+    last_error = "All audio strategies failed"
+    for i, strategy in enumerate(strategies, 1):
+        logger.info(f"📋 Audio strategy {i}/{len(strategies)}: {strategy['name']}")
+        cleanup_files(download_id)
+
+        ydl_opts = dict(base_opts, format=strategy['format'])
+        if strategy['clients']:
+            ydl_opts['extractor_args'] = {'youtube': {'player_client': strategy['clients']}}
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(request.url, download=True)
+
+            # Search queries come back as a playlist with one entry.
+            if info and info.get('entries') is not None:
+                info = next((entry for entry in info['entries'] if entry), None)
+            if not info:
+                raise Exception("No results")
+
+            audio_file = os.path.join(DOWNLOADS_DIR, f'{download_id}.mp3')
+            if not os.path.isfile(audio_file) or os.path.getsize(audio_file) == 0:
+                raise Exception("Converted MP3 not found")
+
+            logger.info(f"✅ Audio strategy '{strategy['name']}' succeeded: {info.get('title')}")
+            return {
+                "success": True,
+                "audio_only": True,
+                "file_path": os.path.basename(audio_file),
+                "download_url": f"/files/{os.path.basename(audio_file)}",
+                "title": info.get('title', 'Audio'),
+                "artist": info.get('artist'),
+                "track": info.get('track'),
+                "uploader": info.get('uploader'),
+                "duration": info.get('duration'),
+                "video_id": info.get('id'),
+                "webpage_url": info.get('webpage_url'),
+                "url": request.url,
+                "file_size_bytes": os.path.getsize(audio_file),
+                "file_size_mb": round(os.path.getsize(audio_file) / (1024 * 1024), 2),
+                "strategy_used": strategy['name']
+            }
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"❌ Audio strategy '{strategy['name']}' failed: {last_error}")
+
+    cleanup_files(download_id)
+    logger.error(f"❌ All audio strategies failed for: {request.url}")
+    return {
+        "success": False,
+        "audio_only": True,
+        "error": f"Audio download failed: {last_error}",
+        "error_type": "audio_download_failed"
+    }
+
 @app.post("/download")
 async def download_video(request: DownloadRequest,
                         background_tasks: BackgroundTasks,
@@ -967,6 +1061,10 @@ async def download_video(request: DownloadRequest,
     
     # Clean up any existing files with this ID
     cleanup_files(download_id)
+    
+    if request.audio_only:
+        # Runs in a worker thread so /health keeps answering during the download.
+        return await run_in_threadpool(download_audio, request, download_id)
     
     # Check if it's YouTube and use specialized handler
     is_youtube = any(x in request.url for x in ["youtube.com", "youtu.be"])

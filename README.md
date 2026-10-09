@@ -140,6 +140,22 @@ X-API-Key: your-api-key
 }
 ```
 
+### Download Audio (MP3)
+```http
+POST /download
+X-API-Key: your-api-key
+
+{
+  "url": "https://www.youtube.com/watch?v=...",  # or "ytsearch1:artist - song"
+  "audio_only": true
+}
+```
+
+Returns an MP3 (best available audio, with metadata and cover art embedded) plus
+`title`, `artist`, `track`, `uploader`, `duration`, `video_id` and `webpage_url`.
+The response carries `"audio_only": true`, and `GET /health` reports
+`"capabilities": {"audio_only": true}` so clients can detect support.
+
 ### Retrieve File
 ```http
 GET /files/{filename}
